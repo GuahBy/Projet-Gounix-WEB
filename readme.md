@@ -15,7 +15,7 @@
 ### 🅰️ Option 1 : Cloner le dépôt GitHub
 
 ```bash
-git clone https://github.com/GuahBy/ProjetS2-Gounix-WEB
+git clone https://github.com/GuahBy/Projet-Gounix-WEB
 ```
 
 ### 🅱️ Option 2 : Télécharger l’archive `.zip`
