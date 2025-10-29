@@ -1,0 +1,14 @@
+{
+  "dependencies": [
+    "SDL2",
+    "SDL2_image",
+    "SDL2_ttf"
+  ],
+  "compiler": {
+    "flags": [
+      "-I../libxml2/include",
+      "-L../libxml2"
+    ]
+  }
+}
+

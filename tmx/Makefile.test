@@ -1,0 +1,35 @@
+# Test Makefile pour vérifier libxml2 uniquement
+# Usage: emmake make -f Makefile.test
+
+CC = emcc
+TARGET = test_tmx.html
+
+# TMX library sources seulement (pour tester libxml2)
+TMX_SOURCES = src/tmx.c src/tmx_xml.c src/tmx_utils.c src/tmx_err.c src/tmx_mem.c src/tmx_hash.c
+
+# Test source
+TEST_SOURCE = test_libxml2.c
+
+# libxml2 paths (compiled for Emscripten)
+LIBXML2_DIR = ../libs/libxml2
+LIBXML2_INCLUDE = -I$(LIBXML2_DIR)/include -I$(LIBXML2_DIR)/build
+LIBXML2_LIB = $(LIBXML2_DIR)/build/libxml2.a
+
+# Compiler flags (sans SDL pour test rapide)
+CFLAGS = -O2 \
+	-I./src \
+	$(LIBXML2_INCLUDE) \
+	-sUSE_ZLIB=1 \
+	-sALLOW_MEMORY_GROWTH=1
+
+# Build target
+all: $(TARGET)
+
+$(TARGET): $(TEST_SOURCE) $(TMX_SOURCES) $(LIBXML2_LIB)
+	$(CC) $(TEST_SOURCE) $(TMX_SOURCES) $(LIBXML2_LIB) -o $(TARGET) $(CFLAGS)
+
+# Clean
+clean:
+	rm -f test_tmx.js test_tmx.wasm test_tmx.html test_tmx.data
+
+.PHONY: all clean

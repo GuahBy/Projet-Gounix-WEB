@@ -1,0 +1,29 @@
+# Chemins de base
+PROJECT_ROOT = /mnt/c/Users/gabriel.gademann/Downloads/PROJET_S2_JEAN_MI_JINOUX-main
+LIBXML2_INCLUDE = $(PROJECT_ROOT)/libxml2_emscripten/include
+LIBXML2_INCLUDE_SPECIFIC = $(PROJECT_ROOT)/libxml2_emscripten/include/libxml2
+LIBXML2_LIB = $(PROJECT_ROOT)/libxml2_emscripten/lib
+
+# Compilateur Emscripten
+CC = emcc
+
+# Flags de compilation
+CFLAGS = -O2 -Wall
+LDFLAGS = -I$(LIBXML2_INCLUDE) -I$(LIBXML2_INCLUDE_SPECIFIC) -L$(LIBXML2_LIB)
+LIBS = -lxml2
+
+# Cible de test
+TARGET = test_libxml2.html
+SOURCES = test_xml.c
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCES)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(SOURCES) -o $(TARGET) $(LIBS) \
+	-s WASM=1 \
+	-s ALLOW_MEMORY_GROWTH=1 \
+	-s EXIT_RUNTIME=1 \
+	-s INVOKE_RUN=1
+
+clean:
+	rm -f $(TARGET) $(TARGET:.html=.js) $(TARGET:.html=.wasm)

@@ -1,0 +1,2450 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <tmx.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
+#include <SDL2/SDL_ttf.h>
+#include <ctype.h>
+#include <time.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
+#define DISPLAY_W 800
+#define DISPLAY_H 600
+#define PLAYER_SPEED 5
+#define PLAYER_SIZE 20
+#define INITIAL_ZOOM 1.0f
+#define MAX_DIALOGUES 5
+
+typedef struct
+{
+    int etape;
+    int parle_a_mamie;
+    int a_trouve_livre;
+    int parle_a_kevin;
+    int a_donne_autographe;
+    int a_tampon;
+    int parle_a_roger;
+    int a_manuscrit;
+    int a_autorisation;
+    int a_declenche_conference;
+
+} Quete;
+typedef struct
+{
+    int a_livre;
+    int a_stylo;
+    int a_tampon;
+    int a_manuscrit;
+    int a_autorisation;
+} Inventaire;
+typedef struct
+{
+    SDL_Texture *texture;
+    int x, y;
+    int size;
+    char name[32];
+    int dernier_dialogue_index;
+} PNJ;
+
+typedef struct
+{
+    int faim;
+    int energie;
+    int pv;
+} Stats;
+
+typedef struct
+{
+    SDL_Texture *texture;
+    int x, y;
+    int speed;
+    int size;
+    int a_force_sur_nourriture;
+    int faim_warning_affiche;
+    int energie_warning_affiche;
+    int mort_affichee;
+    int dernier_sommeil;
+    int heure_du_jour;
+    int dernier_tick_heure;
+    Stats stats;
+    Inventaire inventaire;
+    Quete quete;
+    int gain_nourriture;
+    int gain_sommeil;
+} Player;
+
+typedef struct
+{
+    float x, y;
+    float zoom;
+} Camera;
+
+typedef struct
+{
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    TTF_Font *font;
+    tmx_map *map;
+    int is_running;
+} GameContext;
+
+typedef struct
+{
+    const char *name;
+    const char *sprite_path;
+    const char *dialogues[MAX_DIALOGUES];
+} PNJ_Info;
+
+PNJ_Info pnj_infos[] = {
+    {"mamie", "ressources/pnj/mamie.png", {"Mamie : \nBonjour mon petit.", "Mamie : \nVeux-tu un the mathematique ?", "Mamie : \nJe sens que tu es fatigue...", NULL}},
+    {"michel", "ressources/pnj/michel.png", {"Michel : \nEncore un bug ?", "Michel : \nC etait mieux avant.", "Michel : \nT as pas honte d'appeler ca du code ?", NULL}},
+    {"kevin", "ressources/pnj/kevin.png", {"Kevin : \nJ ai un projet IA en crypto NFT quantique !", "Kevin : \nTu me suis sur Insta ?", "Kevin : \nWesh, moi je code en Rust depuis la maternelle.", NULL}},
+    {"klein", "ressources/pnj/klein.png", {"Klein :\nLe temps n existe peut-être pas.", "Klein :\nEt si la carte etait le territoire ?", NULL}},
+    {"roger", "ressources/pnj/roger.png", {"Roger :\nC est encore la faute du management !", "Roger :\nLa reforme des outils ? J en veux pas !", NULL}},
+    {"gaussin", "ressources/pnj/gaussin.png", {"Gaussin :\nIl manque le formulaire B27.", "Gaussin :\nPour une derogation il te faut 3 tampons.", NULL}},
+    {"bourbaki", "ressources/pnj/bourbaki.png", {"Bourbaki : \nOn ne triche pas avec les axiomes.", "Bourbaki : \nLis les elements de mathematique et reviens.", NULL}},
+    {"leserre", "ressources/pnj/leserre.png", {"Leserre : \nLa logique precede le verbe.", "Leserre : \nTrouve le paradoxe dans ma quete.", NULL}},
+    {"fourier", "ressources/pnj/fourier.png", {"Fourier : \nResous cette FFT pour gagner un bonus.", "Fourier : \nTu veux apprendre l'analyse ?", NULL}}};
+
+const int NB_PNJ_INFOS = sizeof(pnj_infos) / sizeof(PNJ_Info);
+SDL_Renderer *ren = NULL;
+TTF_Font *global_font = NULL;
+char current_map_path[128];
+
+void *SDL_tex_loader(const char *path);
+void set_color(int color);
+void draw_tile(void *image, unsigned int sx, unsigned int sy, unsigned int sw, unsigned int sh,
+               unsigned int dx, unsigned int dy, float opacity, unsigned int flags, Camera *cam);
+void draw_layer(tmx_map *map, tmx_layer *layer, Camera *cam);
+void draw_all_layers(tmx_map *map, tmx_layer *layer, Camera *cam);
+void render_map(tmx_map *map, Camera *cam);
+Player *init_player(SDL_Renderer *renderer, const char *sprite_path);
+void render_player(Player *p, SDL_Renderer *renderer, Camera *cam);
+void render_pnj(PNJ *pnj, SDL_Renderer *renderer, Camera *cam);
+int is_near_pnj(Player *player, PNJ *pnj, float dist);
+void draw_status_bar_label(SDL_Renderer *renderer, int x, int y, int value, const char *label, SDL_Color color);
+void printf_2D(int x, int y, const char *format, ...);
+void render_stats(Player *p);
+int show_menu(SDL_Renderer *renderer, TTF_Font *font, Player *joueur_actuel);
+void afficher_dialogue_box(const char *texte);
+void game_loop(SDL_Renderer *renderer, tmx_map **map, Player *player, int *current_map_id);
+void update_and_render_stats(Player *p);
+int warningDeath(Player *player, SDL_Renderer *renderer);
+void update_player_and_handle_exit(Player *p, int mx, int my, tmx_map **map, SDL_Renderer *renderer, int *current_map_id, PNJ ***pnjs, int *nb_pnjs);
+int get_map_id(const char *path);
+PNJ *init_pnj_from_name(const char *name, int x, int y, SDL_Renderer *renderer);
+PNJ **charger_pnjs_depuis_tiled(tmx_map *map, SDL_Renderer *renderer, int *nb_pnjs);
+void liberer_pnjs(PNJ **pnjs, int nb);
+void intro_box(SDL_Renderer *renderer);
+int split_text(const char *texte, char lignes[][128], int max_lignes, int max_chars);
+void check_interaction_objets_event(Player *p, tmx_map *map, PNJ **pnjs, int nb_pnjs);
+void interaction_nourriture(Player *p, SDL_Renderer *renderer);
+void interaction_lit(Player *p, SDL_Renderer *renderer, tmx_map *map, PNJ **pnjs, int nb_pnjs);
+int pause_menu(SDL_Renderer *renderer, TTF_Font *font);
+void afficher_inventaire(Player *p, SDL_Renderer *renderer);
+const char *get_dialogue_pnj(Player *player, PNJ *pnj);
+const char *get_random_dialogue(PNJ *pnj, const char *name);
+int mini_quiz_klein(SDL_Renderer *renderer);
+void afficher_cinematique_fin(SDL_Renderer *renderer, TTF_Font *font, Player *player);
+int sauvegarder_jeu(Player *p, const char *map_path, const char *filename);
+int charger_jeu(Player *p, char *map_path, const char *filename);
+void reload_player_texture(Player *p, SDL_Renderer *renderer, const char *sprite_path);
+
+void *SDL_tex_loader(const char *path)
+{
+    return IMG_LoadTexture(ren, path);
+}
+
+void set_color(int color)
+{
+    tmx_col_bytes col = tmx_col_to_bytes(color);
+    SDL_SetRenderDrawColor(ren, col.r, col.g, col.b, col.a);
+}
+
+void draw_tile(void *image, unsigned int sx, unsigned int sy, unsigned int sw, unsigned int sh,
+               unsigned int dx, unsigned int dy, float opacity, unsigned int flags, Camera *cam)
+{
+    SDL_Rect src = {sx, sy, sw, sh};
+    SDL_Rect dest = {dx - cam->x, dy - cam->y, sw * cam->zoom, sh * cam->zoom};
+    SDL_RenderCopy(ren, (SDL_Texture *)image, &src, &dest);
+}
+
+void draw_layer(tmx_map *map, tmx_layer *layer, Camera *cam)
+{
+    for (unsigned long i = 0; i < map->height; i++)
+    {
+        for (unsigned long j = 0; j < map->width; j++)
+        {
+            unsigned int gid = layer->content.gids[i * map->width + j] & TMX_FLIP_BITS_REMOVAL;
+            if (map->tiles[gid])
+            {
+                tmx_tile *tile = map->tiles[gid];
+                tmx_tileset *ts = tile->tileset;
+                void *image = tile->image ? tile->image->resource_image : ts->image->resource_image;
+                draw_tile(image, tile->ul_x, tile->ul_y, ts->tile_width, ts->tile_height,
+                          j * ts->tile_width, i * ts->tile_height, layer->opacity, 0, cam);
+            }
+        }
+    }
+}
+
+void draw_all_layers(tmx_map *map, tmx_layer *layer, Camera *cam)
+{
+    while (layer)
+    {
+        if (layer->visible && layer->type == L_LAYER)
+            draw_layer(map, layer, cam);
+        layer = layer->next;
+    }
+}
+
+void render_map(tmx_map *map, Camera *cam)
+{
+    set_color(map->backgroundcolor);
+    SDL_RenderClear(ren);
+    draw_all_layers(map, map->ly_head, cam);
+}
+
+Player *init_player(SDL_Renderer *renderer, const char *sprite_path)
+{
+    Player *p = malloc(sizeof(Player));
+    if (!p)
+    {
+        fprintf(stderr, "Erreur allocation joueur\n");
+        return NULL;
+    }
+
+    SDL_Surface *surf = IMG_Load(sprite_path);
+    p->texture = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_FreeSurface(surf);
+    p->x = DISPLAY_W / 2;
+    p->y = DISPLAY_H / 2;
+    p->speed = PLAYER_SPEED;
+    p->size = PLAYER_SIZE;
+    p->stats = (Stats){100, 100, 100};
+    p->a_force_sur_nourriture = 0;
+    p->faim_warning_affiche = 0;
+    p->energie_warning_affiche = 0;
+    p->mort_affichee = 0;
+    p->dernier_sommeil = 0;
+    p->inventaire.a_livre = 0;
+    p->inventaire.a_stylo = 0;
+    p->inventaire.a_tampon = 0;
+    p->inventaire.a_manuscrit = 0;
+    p->inventaire.a_autorisation = 0;
+    p->heure_du_jour = 9;
+    p->dernier_tick_heure = SDL_GetTicks();
+    p->quete.etape = 0;
+    p->quete.parle_a_mamie = 0;
+    p->quete.a_trouve_livre = 0;
+    p->quete.parle_a_kevin = 0;
+    p->quete.a_donne_autographe = 0;
+    p->quete.a_tampon = 0;
+    p->quete.a_manuscrit = 0;
+    p->quete.a_autorisation = 0;
+    p->quete.a_declenche_conference = 0;
+    p->gain_nourriture = 10;
+    p->gain_sommeil = 30;
+
+    return p;
+}
+
+PNJ *init_pnj(SDL_Renderer *renderer, const char *sprite_path, int dx, int dy)
+{
+    PNJ *pnj = malloc(sizeof(PNJ));
+    SDL_Surface *surface = IMG_Load(sprite_path);
+    if (!surface)
+    {
+        fprintf(stderr, "Erreur lors du chargement de l'image : %s\n", IMG_GetError());
+        free(pnj);
+        return NULL;
+    }
+    pnj->texture = SDL_CreateTextureFromSurface(renderer, surface);
+    if (!pnj->texture)
+    {
+        fprintf(stderr, "Erreur lors de la creation de la texture : %s\n", SDL_GetError());
+        SDL_FreeSurface(surface);
+        free(pnj);
+        return NULL;
+    }
+    pnj->x = dx;
+    pnj->y = dy;
+    pnj->size = PLAYER_SIZE;
+    SDL_FreeSurface(surface);
+    return pnj;
+}
+
+void render_player(Player *p, SDL_Renderer *renderer, Camera *cam)
+{
+    SDL_Rect r = {p->x - cam->x, p->y - cam->y, p->size * cam->zoom, p->size * cam->zoom};
+    SDL_RenderCopy(renderer, p->texture, NULL, &r);
+}
+
+void render_pnj(PNJ *pnj, SDL_Renderer *renderer, Camera *cam)
+{
+    SDL_Rect rect;
+    rect.x = pnj->x - cam->x;
+    rect.y = pnj->y - cam->y;
+    rect.w = pnj->size * cam->zoom;
+    rect.h = pnj->size * cam->zoom;
+    SDL_RenderCopy(renderer, pnj->texture, NULL, &rect);
+}
+
+int is_near_pnj(Player *player, PNJ *pnj, float dist)
+{
+    int dx = player->x - pnj->x;
+    int dy = player->y - pnj->y;
+    return (dx * dx + dy * dy) < (dist * dist);
+}
+
+void draw_status_bar_label(SDL_Renderer *renderer, int x, int y, int value, const char *label, SDL_Color color)
+{
+    int bar_width = 150;
+    int bar_height = 20;
+
+    // Fond de la barre
+    SDL_Rect bg = {x, y, bar_width, bar_height};
+    SDL_SetRenderDrawColor(renderer, 60, 60, 60, 255);
+    SDL_RenderFillRect(renderer, &bg);
+
+    // Remplissage de la barre selon la valeur
+    SDL_Rect fill = {x + 2, y + 2, (bar_width - 4) * value / 100, bar_height - 4};
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+    SDL_RenderFillRect(renderer, &fill);
+
+    // Contour blanc
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderDrawRect(renderer, &bg);
+
+    // Texte sur fond blanc
+    char label_text[32];
+    snprintf(label_text, sizeof(label_text), "%s : %d", label, value);
+
+    SDL_Color text_color = {0, 0, 0, 255}; // Texte noir
+    SDL_Surface *text_surf = TTF_RenderText_Shaded(global_font, label_text, text_color, (SDL_Color){255, 255, 255});
+    SDL_Texture *text_tex = SDL_CreateTextureFromSurface(ren, text_surf);
+    SDL_Rect text_rect = {x + bar_width + 10, y, text_surf->w, text_surf->h};
+    SDL_RenderCopy(renderer, text_tex, NULL, &text_rect);
+    SDL_FreeSurface(text_surf);
+    SDL_DestroyTexture(text_tex);
+}
+
+void printf_2D(int x, int y, const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    SDL_Color color = {255, 255, 255, 255};
+    SDL_Surface *surf = TTF_RenderText_Solid(global_font, buffer, color);
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+    SDL_Rect rect = {x, y, surf->w, surf->h};
+    SDL_RenderCopy(ren, tex, NULL, &rect);
+    SDL_FreeSurface(surf);
+    SDL_DestroyTexture(tex);
+}
+
+void render_stats(Player *p)
+{
+    draw_status_bar_label(ren, 20, 20, p->stats.pv, "PV", (SDL_Color){255, 0, 0});
+    draw_status_bar_label(ren, 20, 50, p->stats.faim, "Faim", (SDL_Color){255, 165, 0});
+    draw_status_bar_label(ren, 20, 80, p->stats.energie, "Energie", (SDL_Color){0, 128, 255});
+    // Position du fond + texte
+    int heure_x = DISPLAY_W - 150;
+    int heure_y = 20;
+    int heure_w = 130;
+    int heure_h = 28;
+
+    // 🔲 Fond blanc semi-transparent
+    SDL_Rect rect_heure = {heure_x, heure_y, heure_w, heure_h};
+    SDL_SetRenderDrawColor(ren, 255, 255, 255, 220);
+    SDL_RenderFillRect(ren, &rect_heure);
+
+    // 🖤 Texte noir par-dessus
+    char heure_str[32];
+    sprintf(heure_str, "Heure : %02dh00", p->heure_du_jour);
+    SDL_Color noir = {0, 0, 0, 255};
+    SDL_Surface *surf = TTF_RenderText_Solid(global_font, heure_str, noir);
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+    SDL_Rect pos = {heure_x + 10, heure_y + 5, surf->w, surf->h};
+    SDL_RenderCopy(ren, tex, NULL, &pos);
+    SDL_FreeSurface(surf);
+    SDL_DestroyTexture(tex);
+}
+
+int show_menu(SDL_Renderer *renderer, TTF_Font *font, Player *joueur_actuel)
+{
+    const char *options[] = {"Nouvelle Partie", "Charger Partie", "Quitter"};
+    const int nb_options = 3;
+    int selected = 0;
+    SDL_Event e;
+    int loop = 1;
+
+    while (loop)
+    {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+
+        for (int i = 0; i < nb_options; i++)
+        {
+            SDL_Color color = i == selected ? (SDL_Color){255, 255, 0} : (SDL_Color){255, 255, 255};
+
+            SDL_Surface *text = TTF_RenderText_Solid(font, options[i], color);
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, text);
+            SDL_Rect pos = {DISPLAY_W / 2 - text->w / 2, 200 + i * 60, text->w, text->h};
+            SDL_RenderCopy(renderer, tex, NULL, &pos);
+            SDL_FreeSurface(text);
+            SDL_DestroyTexture(tex);
+        }
+
+        SDL_RenderPresent(renderer);
+
+        while (SDL_PollEvent(&e))
+        {
+            if (e.type == SDL_QUIT)
+                return 2; // Quitter
+            if (e.type == SDL_KEYDOWN)
+            {
+                switch (e.key.keysym.sym)
+                {
+                case SDLK_UP:
+                    selected = (selected + nb_options - 1) % nb_options;
+                    break;
+                case SDLK_DOWN:
+                    selected = (selected + 1) % nb_options;
+                    break;
+                case SDLK_RETURN:
+                    loop = 0;
+                    break;
+                case SDLK_ESCAPE:
+                    selected = 2; // Quitter
+                    loop = 0;
+                    break;
+                }
+            }
+        }
+
+        SDL_Delay(100);
+    }
+
+    return selected;
+}
+
+void afficher_dialogue_box(const char *texte)
+{
+    int box_w = 700;
+    int box_h = 170;
+    int box_x = (DISPLAY_W - box_w) / 2;
+    int box_y = DISPLAY_H - box_h - 10;
+
+    SDL_Rect fond = {box_x, box_y, box_w, box_h};
+    SDL_SetRenderDrawColor(ren, 255, 255, 255, 240);
+    SDL_RenderFillRect(ren, &fond);
+
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderDrawRect(ren, &fond);
+
+    SDL_Color noir = {0, 0, 0, 255};
+
+    // Utilisation du word wrap
+    char lignes[6][128];
+    int nb_lignes = split_text(texte, lignes, 6, 80); // 6 lignes max, 80 caractères max/ligne
+
+    for (int i = 0; i < nb_lignes; i++)
+    {
+        SDL_Surface *surf = TTF_RenderText_Solid(global_font, lignes[i], noir);
+        SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+        int text_x = box_x + 20;
+        int text_y = box_y + 15 + i * (surf->h + 3);
+        SDL_Rect pos = {text_x, text_y, surf->w, surf->h};
+        SDL_RenderCopy(ren, tex, NULL, &pos);
+        SDL_FreeSurface(surf);
+        SDL_DestroyTexture(tex);
+    }
+}
+
+void game_loop(SDL_Renderer *renderer, tmx_map **map, Player *player, int *current_map_id)
+{
+    SDL_Event e;
+    Camera cam = {0, 0, INITIAL_ZOOM};
+    int move_x = 0, move_y = 0;
+    int run = 1;
+    int dialogue_index = -1;
+
+    int nb_pnjs = 0;
+    PNJ **pnjs = charger_pnjs_depuis_tiled(*map, renderer, &nb_pnjs);
+
+    for (int i = 0; i < nb_pnjs; i++)
+    {
+        if (!pnjs[i])
+        {
+            printf("Erreur lors de l'initialisation du PNJ %d\n", i);
+            exit(1);
+        }
+    }
+
+    while (run)
+    {
+        const Uint8 *keystate = SDL_GetKeyboardState(NULL);
+
+        while (SDL_PollEvent(&e))
+        {
+            if (e.type == SDL_QUIT)
+                run = 0;
+            if (e.type == SDL_KEYDOWN)
+            {
+                switch (e.key.keysym.sym)
+                {
+                case SDLK_w:
+                case SDLK_UP:
+                    move_y = -1;
+                    break;
+                case SDLK_s:
+                case SDLK_DOWN:
+                    move_y = 1;
+                    break;
+                case SDLK_a:
+                case SDLK_LEFT:
+                    move_x = -1;
+                    break;
+                case SDLK_d:
+                case SDLK_RIGHT:
+                    move_x = 1;
+                    break;
+
+case SDLK_F9: {
+    const char *options[] = {
+        "1. Menu Statistiques",
+        "2. Modifier gain nourriture / sommeil",
+        "3. Gestion du temps",
+        "4. Modifier taille PNJ",
+        "5. Gestion de l'inventaire",
+        "6. Teleportation",
+        "7. Modifier l'etape de la quete",
+        "8. Voir Etat Actuel",
+        "9. Quitter le mode admin"
+    };
+    const int nb_options = sizeof(options) / sizeof(options[0]);
+    int selected = 0;
+    int admin_loop = 1;
+    SDL_Event e_admin;
+
+    while (admin_loop) {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+
+        for (int i = 0; i < nb_options; i++) {
+            SDL_Color color = (i == selected) ? (SDL_Color){255, 255, 0} : (SDL_Color){255, 255, 255};
+            SDL_Surface *surf = TTF_RenderText_Solid(global_font, options[i], color);
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, surf);
+            SDL_Rect pos = {DISPLAY_W / 2 - surf->w / 2, 100 + i * 40, surf->w, surf->h};
+            SDL_RenderCopy(renderer, tex, NULL, &pos);
+            SDL_FreeSurface(surf);
+            SDL_DestroyTexture(tex);
+        }
+
+        SDL_RenderPresent(renderer);
+
+        while (SDL_PollEvent(&e_admin)) {
+            if (e_admin.type == SDL_KEYDOWN) {
+                if (e_admin.key.keysym.sym == SDLK_UP)
+                    selected = (selected + nb_options - 1) % nb_options;
+                else if (e_admin.key.keysym.sym == SDLK_DOWN)
+                    selected = (selected + 1) % nb_options;
+                else if (e_admin.key.keysym.sym == SDLK_RETURN) {
+                    SDL_Event ev;
+                    switch (selected) {
+                        case 0: {
+    afficher_dialogue_box("Quelle stat modifier ? 1=PV 2=Faim 3=Energie");
+    SDL_RenderPresent(renderer);
+
+    int stat_index = -1;
+    SDL_Event ev;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN) {
+            if (ev.key.keysym.sym == SDLK_1) stat_index = 0;
+            else if (ev.key.keysym.sym == SDLK_2) stat_index = 1;
+            else if (ev.key.keysym.sym == SDLK_3) stat_index = 2;
+            if (stat_index != -1) break;
+        }
+    }
+
+    afficher_dialogue_box("Nouvelle valeur : 1=10, ..., 9=90");
+    SDL_RenderPresent(renderer);
+    int valeur = 0;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN &&
+            ev.key.keysym.sym >= SDLK_1 && ev.key.keysym.sym <= SDLK_9) {
+            valeur = (ev.key.keysym.sym - SDLK_0) * 10;
+            break;
+        }
+    }
+
+    if (stat_index == 0) player->stats.pv = valeur;
+    else if (stat_index == 1) player->stats.faim = valeur;
+    else player->stats.energie = valeur;
+
+    afficher_dialogue_box("Stat mise a jour !");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1000);
+    break;
+}
+
+                       case 1: {
+    afficher_dialogue_box("Modifier le gain :\n1 = Nourriture\n2 = Sommeil");
+    SDL_RenderPresent(renderer);
+
+    int choix = 0;
+    SDL_Event ev;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN) {
+            if (ev.key.keysym.sym == SDLK_1) choix = 1;
+            else if (ev.key.keysym.sym == SDLK_2) choix = 2;
+            if (choix != 0) break;
+        }
+    }
+
+    afficher_dialogue_box("Entrer nouvelle valeur : 1=10, ..., 9=90");
+    SDL_RenderPresent(renderer);
+
+    int gain = 0;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN &&
+            ev.key.keysym.sym >= SDLK_1 && ev.key.keysym.sym <= SDLK_9) {
+            gain = (ev.key.keysym.sym - SDLK_0) * 10;
+            break;
+        }
+    }
+
+    if (choix == 1) player->gain_nourriture = gain;
+    else player->gain_sommeil = gain;
+
+    char msg[64];
+    sprintf(msg, "Gain %s mis a %d", (choix == 1 ? "nourriture" : "sommeil"), gain);
+    afficher_dialogue_box(msg);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1000);
+    break;
+}
+case 2: {
+    afficher_dialogue_box("1 = Avancer l'heure\n2 = Reculer l'heure");
+    SDL_RenderPresent(renderer);
+
+    int action = 0;
+    SDL_Event ev;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN) {
+            if (ev.key.keysym.sym == SDLK_1) action = 1;
+            else if (ev.key.keysym.sym == SDLK_2) action = 2;
+            if (action != 0) break;
+        }
+    }
+
+    afficher_dialogue_box("Combien d'heures ? (1 a 9)");
+    SDL_RenderPresent(renderer);
+
+    int heure_modif = 0;
+    while (SDL_WaitEvent(&ev)) {
+        if (ev.type == SDL_KEYDOWN &&
+            ev.key.keysym.sym >= SDLK_1 && ev.key.keysym.sym <= SDLK_9) {
+            heure_modif = ev.key.keysym.sym - SDLK_0;
+            break;
+        }
+    }
+
+    if (action == 1)
+        player->heure_du_jour = (player->heure_du_jour + heure_modif) % 24;
+    else
+        player->heure_du_jour = (player->heure_du_jour - heure_modif + 24) % 24;
+
+    char heure_msg[64];
+    sprintf(heure_msg, "Nouvelle heure : %dh", player->heure_du_jour);
+    afficher_dialogue_box(heure_msg);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1000);
+    break;
+}
+
+                        case 3: {
+                            afficher_dialogue_box("Choisir taille PNJ : 1=10 ... 9=90");
+                            SDL_RenderPresent(renderer);
+                            int taille = 0;
+                            while (SDL_WaitEvent(&ev)) {
+                                if (ev.type == SDL_KEYDOWN &&
+                                    ev.key.keysym.sym >= SDLK_1 && ev.key.keysym.sym <= SDLK_9) {
+                                    taille = (ev.key.keysym.sym - SDLK_0) * 10;
+                                    break;
+                                }
+                            }
+
+                            for (int i = 0; i < nb_pnjs; i++) {
+                                if (pnjs[i]) pnjs[i]->size = taille;
+                            }
+
+                            char msg[64];
+                            sprintf(msg, "Taille PNJ mise a %d", taille);
+                            afficher_dialogue_box(msg);
+                            SDL_RenderPresent(renderer);
+                            SDL_Delay(1000);
+                            break;
+                        }
+                        case 4:
+                        {
+                            const char *options[] = {
+                                "1. Inverser Livre",
+                                "2. Inverser Stylo",
+                                "3. Inverser Tampon",
+                                "4. Inverser Manuscrit",
+                                "5. Inverser Autorisation",
+                                "6. Remplir tout l'inventaire",
+                                "7. Vider tout l'inventaire",
+                                "8. Retour"};
+                            const int nb = 8;
+                            int selected = 0;
+                            int inv_loop = 1;
+                            SDL_Event ev;
+
+                            while (inv_loop)
+                            {
+                                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                                SDL_RenderClear(renderer);
+
+                                for (int i = 0; i < nb; i++)
+                                {
+                                    SDL_Color color = (i == selected) ? (SDL_Color){255, 255, 0} : (SDL_Color){255, 255, 255};
+                                    SDL_Surface *surf = TTF_RenderText_Solid(global_font, options[i], color);
+                                    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, surf);
+                                    SDL_Rect pos = {DISPLAY_W / 2 - surf->w / 2, 100 + i * 40, surf->w, surf->h};
+                                    SDL_RenderCopy(renderer, tex, NULL, &pos);
+                                    SDL_FreeSurface(surf);
+                                    SDL_DestroyTexture(tex);
+                                }
+
+                                SDL_RenderPresent(renderer);
+
+                                while (SDL_PollEvent(&ev))
+                                {
+                                    if (ev.type == SDL_KEYDOWN)
+                                    {
+                                        if (ev.key.keysym.sym == SDLK_UP)
+                                            selected = (selected + nb - 1) % nb;
+                                        else if (ev.key.keysym.sym == SDLK_DOWN)
+                                            selected = (selected + 1) % nb;
+                                        else if (ev.key.keysym.sym == SDLK_RETURN)
+                                        {
+                                            switch (selected)
+                                            {
+                                            case 0:
+                                                player->inventaire.a_livre ^= 1;
+                                                break;
+                                            case 1:
+                                                player->inventaire.a_stylo ^= 1;
+                                                break;
+                                            case 2:
+                                                player->inventaire.a_tampon ^= 1;
+                                                break;
+                                            case 3:
+                                                player->inventaire.a_manuscrit ^= 1;
+                                                break;
+                                            case 4:
+                                                player->inventaire.a_autorisation ^= 1;
+                                                break;
+                                            case 5:
+                                                player->inventaire.a_livre = 1;
+                                                player->inventaire.a_stylo = 1;
+                                                player->inventaire.a_tampon = 1;
+                                                player->inventaire.a_manuscrit = 1;
+                                                player->inventaire.a_autorisation = 1;
+                                                break;
+                                            case 6:
+                                                player->inventaire.a_livre = 0;
+                                                player->inventaire.a_stylo = 0;
+                                                player->inventaire.a_tampon = 0;
+                                                player->inventaire.a_manuscrit = 0;
+                                                player->inventaire.a_autorisation = 0;
+                                                break;
+                                            case 7:
+                                                inv_loop = 0;
+                                                break;
+                                            }
+                                        }
+                                        else if (ev.key.keysym.sym == SDLK_ESCAPE)
+                                        {
+                                            inv_loop = 0;
+                                        }
+                                    }
+                                }
+
+                                SDL_Delay(80);
+                            }
+                        }
+                        break;
+                        case 5:
+                        {
+                            const char *destinations[] = {
+                                "1. Aller a la Maison",
+                                "2. Aller a l'Ecole",
+                                "3. Aller au Village",
+                                "4. Aller au Bar",
+                                "5. Retour"};
+                            const int nb = 5;
+                            int selected = 0;
+                            int tp_loop = 1;
+                            SDL_Event ev;
+
+                            while (tp_loop)
+                            {
+                                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                                SDL_RenderClear(renderer);
+
+                                for (int i = 0; i < nb; i++)
+                                {
+                                    SDL_Color color = (i == selected) ? (SDL_Color){255, 255, 0} : (SDL_Color){255, 255, 255};
+                                    SDL_Surface *surf = TTF_RenderText_Solid(global_font, destinations[i], color);
+                                    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, surf);
+                                    SDL_Rect pos = {DISPLAY_W / 2 - surf->w / 2, 100 + i * 40, surf->w, surf->h};
+                                    SDL_RenderCopy(renderer, tex, NULL, &pos);
+                                    SDL_FreeSurface(surf);
+                                    SDL_DestroyTexture(tex);
+                                }
+
+                                SDL_RenderPresent(renderer);
+
+                                while (SDL_PollEvent(&ev))
+                                {
+                                    if (ev.type == SDL_KEYDOWN)
+                                    {
+                                        if (ev.key.keysym.sym == SDLK_UP)
+                                            selected = (selected + nb - 1) % nb;
+                                        else if (ev.key.keysym.sym == SDLK_DOWN)
+                                            selected = (selected + 1) % nb;
+                                        else if (ev.key.keysym.sym == SDLK_RETURN)
+                                        {
+                                            const char *map_chemin = NULL;
+                                            int x = 0, y = 0;
+
+                                            switch (selected)
+                                            {
+                                            case 0: // Maison
+                                                map_chemin = "ressources/maps/Maison_2_Gounix.tmx";
+                                                x = 100;
+                                                y = 420;
+                                                break;
+                                            case 1: // École
+                                                map_chemin = "ressources/maps/Classe_2_Gounix.tmx";
+                                                x = 90;
+                                                y = 80;
+                                                break;
+                                            case 2: // Village
+                                                map_chemin = "ressources/maps/Village_2_Gounix_mini.tmx";
+                                                x = 370;
+                                                y = 330;
+                                                break;
+                                            case 3: // Bar
+                                                map_chemin = "ressources/maps/Bar_2_Gounix.tmx";
+                                                x = 230;
+                                                y = 350;
+                                                break;
+                                            case 4: // Retour
+                                                tp_loop = 0;
+                                                continue;
+                                            }
+
+                                            if (map_chemin)
+                                            {
+                                                liberer_pnjs(pnjs, nb_pnjs);
+                                                tmx_map_free(*map);
+                                                strcpy(current_map_path, map_chemin);
+                                                *map = tmx_load(current_map_path);
+                                                pnjs = charger_pnjs_depuis_tiled(*map, renderer, &nb_pnjs);
+                                                *current_map_id = get_map_id(current_map_path);
+                                                player->x = x;
+                                                player->y = y;
+                                                tp_loop = 0;
+
+                                                afficher_dialogue_box("Teleportation effectuee !");
+                                                SDL_RenderPresent(renderer);
+                                                SDL_Delay(1000);
+                                            }
+                                        }
+                                        else if (ev.key.keysym.sym == SDLK_ESCAPE)
+                                        {
+                                            tp_loop = 0;
+                                        }
+                                    }
+                                }
+
+                                SDL_Delay(80);
+                            }
+                        }
+                        break;
+                       case 6: {
+                            const char *etapes[] = {
+                                "0: Debut - aller voir Mamie",
+                                "1: Trouver le livre de Poincare",
+                                "2: Parler a Kevin et signer",
+                                "3: Aller au bar parler a Roger",
+                                "4: Valider le tampon avec Gaussin",
+                                "5: Obtenir le manuscrit de Klein",
+                                "6: Rejoindre Leserre",
+                            };
+                            for (int i = 0; i < 7; i++) {
+                                afficher_dialogue_box(etapes[i]);
+                                SDL_RenderPresent(renderer);
+                                SDL_Delay(900);
+                            }
+                            afficher_dialogue_box("Choisis une etape (0 a 6)");
+                            SDL_RenderPresent(renderer);
+                            while (SDL_WaitEvent(&ev)) {
+                                if (ev.type == SDL_KEYDOWN &&
+                                    ev.key.keysym.sym >= SDLK_0 && ev.key.keysym.sym <= SDLK_6) {
+                                    player->quete.etape = ev.key.keysym.sym - SDLK_0;
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+
+                        case 7: {
+                            char etat[512];
+                            sprintf(etat,
+                                "PV:%d FAIM:%d ENERG:%d HEURE:%dh\nETAPE:%d\nLIV:%d STY:%d TAM:%d MAN:%d AUT:%d\nGain Nourriture:%d Gain Sommeil:%d",
+                                player->stats.pv, player->stats.faim, player->stats.energie, player->heure_du_jour,
+                                player->quete.etape,
+                                player->inventaire.a_livre, player->inventaire.a_stylo,
+                                player->inventaire.a_tampon, player->inventaire.a_manuscrit,
+                                player->inventaire.a_autorisation,
+                                player->gain_nourriture, player->gain_sommeil);
+                            afficher_dialogue_box(etat);
+                            SDL_RenderPresent(renderer);
+                            SDL_Delay(1500);
+                            break;
+                        }
+
+                        case 8:
+                            admin_loop = 0;
+                            break;
+                    }
+                } else if (e_admin.key.keysym.sym == SDLK_ESCAPE) {
+                    admin_loop = 0;
+                }
+            }
+        }
+
+        SDL_Delay(80);
+    }
+    break;
+}
+
+    case SDLK_o:
+    {
+        char objectif[512];
+
+        switch (player->quete.etape)
+        {
+        case 0:
+            strcpy(objectif, "Va parler a Mamie pour debuter ta quete.");
+            break;
+        case 1:
+            strcpy(objectif, "Trouve le livre de Poincare dans la maison.");
+            break;
+        case 2:
+            strcpy(objectif, "Parle a Kevin et donne lui un autographe.");
+            break;
+        case 3:
+            strcpy(objectif, "Va au bar parler a Roger.");
+            break;
+        case 4:
+            strcpy(objectif, "Va voir Gaussin pour valider le tampon.");
+            break;
+        case 5:
+            strcpy(objectif, "Va rencontrer Etienne Klein au bar.");
+            break;
+        case 6:
+            strcpy(objectif, "Va voir Leserre avec tous les objets.");
+            break;
+        case 7:
+            strcpy(objectif, "Objectif final accompli. Tu es le chaos.");
+            break;
+        default:
+            strcpy(objectif, "Objectif inconnu.");
+            break;
+        }
+
+        afficher_dialogue_box(objectif);
+        SDL_RenderPresent(renderer);
+        SDL_Delay(1500);
+        break;
+    }
+    case SDLK_ESCAPE:
+        int pause_result = pause_menu(renderer, global_font);
+        if (pause_result == 1)
+        {
+            if (pause_result == 1)
+            {
+                afficher_dialogue_box("Appuie sur 1 ou 2 pour sauvegarder.");
+                SDL_RenderPresent(renderer);
+
+                int slot = 0;
+                SDL_Event e;
+                while (SDL_WaitEvent(&e))
+                {
+                    if (e.type == SDL_KEYDOWN)
+                    {
+                        if (e.key.keysym.sym == SDLK_1)
+                        {
+                            slot = 1;
+                            break;
+                        }
+                        if (e.key.keysym.sym == SDLK_2)
+                        {
+                            slot = 2;
+                            break;
+                        }
+                        if (e.key.keysym.sym == SDLK_ESCAPE)
+                        {
+                            slot = 0;
+                            break;
+                        }
+                    }
+                }
+
+                if (slot != 0)
+                {
+                    const char *filename = (slot == 2) ? "save2.dat" : "save1.dat";
+                    if (sauvegarder_jeu(player, current_map_path, filename))
+                    {
+                        afficher_dialogue_box("Sauvegarde reussie !");
+                    }
+                    else
+                    {
+                        afficher_dialogue_box("Erreur sauvegarde !");
+                    }
+                }
+                else
+                {
+                    afficher_dialogue_box("Sauvegarde annulee.");
+                }
+
+                SDL_RenderPresent(renderer);
+                SDL_Delay(1000);
+            }
+        }
+        else if (pause_result == 2)
+        {
+            afficher_dialogue_box("Appuie sur 1 ou 2 pour charger une partie.");
+            SDL_RenderPresent(renderer);
+
+            int slot = 0;
+            SDL_Event e;
+            while (SDL_WaitEvent(&e))
+            {
+                if (e.type == SDL_KEYDOWN)
+                {
+                    if (e.key.keysym.sym == SDLK_1)
+                    {
+                        slot = 1;
+                        break;
+                    }
+                    if (e.key.keysym.sym == SDLK_2)
+                    {
+                        slot = 2;
+                        break;
+                    }
+                    if (e.key.keysym.sym == SDLK_ESCAPE)
+                    {
+                        slot = 0;
+                        break;
+                    }
+                }
+            }
+
+            if (slot != 0)
+            {
+                const char *filename = (slot == 2) ? "save2.dat" : "save1.dat";
+
+                if (!charger_jeu(player, current_map_path, filename))
+                {
+                    afficher_dialogue_box("Echec du chargement.");
+                }
+                else
+                {
+                    // 1. Recharge la MAP
+                    tmx_map_free(*map);
+                    *map = tmx_load(current_map_path);
+                    if (!*map)
+                    {
+                        tmx_perror("Erreur chargement map");
+                        exit(1);
+                    }
+
+                    // 2. Recharge la texture du joueur
+                    reload_player_texture(player, renderer, "ressources/pnj/ginoux1.png");
+
+                    // 3. Recharge les PNJ
+                    liberer_pnjs(pnjs, nb_pnjs);
+                    nb_pnjs = 0;
+                    pnjs = charger_pnjs_depuis_tiled(*map, renderer, &nb_pnjs);
+
+                    // 4. Recharge l’ID de map
+                    *current_map_id = get_map_id(current_map_path);
+
+                    afficher_dialogue_box("Partie chargee !");
+                }
+
+                SDL_RenderPresent(renderer);
+                SDL_Delay(1000);
+            }
+        }
+        else if (pause_result == 3)
+        {
+            run = 0; // Retour menu principal
+        }
+        else if (pause_result == 4)
+        {
+            exit(0); // Quitter jeu
+        }
+        // Si 0, on continue simplement
+        break;
+
+    case SDLK_i:
+        afficher_inventaire(player, renderer);
+        break;
+
+    case SDLK_e:
+        for (int i = 0; i < nb_pnjs; i++)
+        {
+            if (pnjs[i] && is_near_pnj(player, pnjs[i], 32.0f))
+            {
+                const char *dialogue = get_dialogue_pnj(player, pnjs[i]);
+                afficher_dialogue_box(dialogue);
+                SDL_RenderPresent(renderer);
+                SDL_Delay(3000);
+                pnjs[i]->dernier_dialogue_index = -1;
+                break;
+            }
+        }
+        check_interaction_objets_event(player, *map, pnjs, nb_pnjs);
+        break;
+
+    case SDLK_RETURN:
+        if (dialogue_index != -1 && dialogue_index < nb_pnjs)
+            pnjs[dialogue_index]->dernier_dialogue_index = -1;
+        dialogue_index = -1;
+        break;
+
+    case SDLK_n:
+        player->stats.pv = 0;
+        break;
+    }
+}
+if (e.type == SDL_KEYUP)
+{
+    switch (e.key.keysym.sym)
+    {
+    case SDLK_w:
+    case SDLK_UP:
+        move_y = 0;
+        break;
+    case SDLK_s:
+    case SDLK_DOWN:
+        move_y = 0;
+        break;
+    case SDLK_a:
+    case SDLK_LEFT:
+        move_x = 0;
+        break;
+    case SDLK_d:
+    case SDLK_RIGHT:
+        move_x = 0;
+        break;
+    case SDLK_e:
+        dialogue_index = -1;
+        for (int i = 0; i < nb_pnjs; i++)
+        {
+            if (is_near_pnj(player, pnjs[i], 32))
+            {
+                dialogue_index = i;
+                break;
+            }
+        }
+
+    case SDLK_RETURN:
+        dialogue_index = -1;
+        break;
+    }
+}
+}
+
+update_player_and_handle_exit(player, move_x, move_y, map, renderer, current_map_id, &pnjs, &nb_pnjs);
+update_and_render_stats(player);
+Uint32 now = SDL_GetTicks();
+if (now - player->dernier_tick_heure >= 10000)
+{
+    player->heure_du_jour += 1;
+    if (player->heure_du_jour >= 24)
+        player->heure_du_jour = 0;
+
+    player->dernier_tick_heure = now;
+}
+
+cam.x = player->x - DISPLAY_W / 2;
+cam.y = player->y - DISPLAY_H / 2;
+SDL_Point cam_offset = {cam.x, cam.y};
+render_map(*map, &cam);
+render_player(player, renderer, &cam);
+for (int i = 0; i < nb_pnjs; i++)
+{
+    if (pnjs[i])
+        render_pnj(pnjs[i], renderer, &cam);
+}
+
+render_stats(player);
+if (warningDeath(player, renderer))
+{
+    run = 0; // Fin de la boucle → retour au menu
+    break;
+}
+SDL_RenderPresent(renderer);
+SDL_Delay(16);
+}
+}
+
+int main(int argc, char **argv)
+{
+    SDL_Init(SDL_INIT_VIDEO);
+    IMG_Init(IMG_INIT_PNG);
+    TTF_Init();
+
+    SDL_Window *win = SDL_CreateWindow("Jean-Mi Simulator", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, DISPLAY_W, DISPLAY_H, 0);
+    SDL_Renderer *renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    ren = renderer;
+    global_font = TTF_OpenFont("ressources/font/Pixellettersfull-BnJ5.ttf", 24);
+
+    if (!win || !renderer || !global_font)
+    {
+        fprintf(stderr, "Erreur lors de l'initialisation SDL :\n");
+        if (!win)
+            fprintf(stderr, " - SDL_CreateWindow a échoué : %s\n", SDL_GetError());
+        if (!renderer)
+            fprintf(stderr, " - SDL_CreateRenderer a échoué : %s\n", SDL_GetError());
+        if (!global_font)
+            fprintf(stderr, " - TTF_OpenFont a échoué : %s\n", TTF_GetError());
+        return 1;
+    }
+    tmx_img_load_func = SDL_tex_loader;
+    tmx_img_free_func = (void (*)(void *))SDL_DestroyTexture;
+
+    Player *joueur = NULL;
+    tmx_map *map = NULL;
+    int current_map_id = 0;
+    PNJ **pnjs = NULL;
+    int nb_pnjs = 0;
+
+    int running = 1;
+    srand(time(NULL));
+
+    while (running)
+    {
+        // 🔄 Vider tous les evenements residuels avant de reafficher le menu
+        SDL_Event e;
+        while (SDL_PollEvent(&e))
+        {
+        } // Vide la file d'evenements
+        int choice = show_menu(renderer, global_font, joueur);
+
+        if (choice == 0) // Nouvelle Partie
+        {
+
+            strcpy(current_map_path, "ressources/maps/Maison_2_Gounix.tmx");
+            map = tmx_load(current_map_path);
+            current_map_id = get_map_id(current_map_path);
+
+            if (!map)
+            {
+                tmx_perror("Erreur chargement map");
+                return 1;
+            }
+
+            joueur = init_player(renderer, "ressources/pnj/ginoux1.png");
+            intro_box(renderer);
+            game_loop(renderer, &map, joueur, &current_map_id);
+            free(joueur);
+            joueur = NULL;
+            tmx_map_free(map);
+        }
+
+        else if (choice == 1)
+        { // Charger Partie
+            Player *joueur_temp = malloc(sizeof(Player));
+            if (!joueur_temp)
+            {
+                fprintf(stderr, "Erreur malloc joueur\n");
+                continue;
+            }
+
+            afficher_dialogue_box("Appuie sur 1 ou 2 pour charger une partie.");
+            SDL_RenderPresent(renderer);
+
+            int slot = 0;
+            SDL_Event e;
+            while (SDL_WaitEvent(&e))
+            {
+                if (e.type == SDL_KEYDOWN)
+                {
+                    if (e.key.keysym.sym == SDLK_1)
+                    {
+                        slot = 1;
+                        break;
+                    }
+                    if (e.key.keysym.sym == SDLK_2)
+                    {
+                        slot = 2;
+                        break;
+                    }
+                    if (e.key.keysym.sym == SDLK_ESCAPE)
+                    {
+                        free(joueur_temp);
+                        joueur_temp = NULL;
+                        break;
+                    }
+                }
+            }
+
+            if (slot != 0 && joueur_temp)
+            {
+                const char *filename = (slot == 2) ? "save2.dat" : "save1.dat";
+
+                if (!charger_jeu(joueur_temp, current_map_path, filename))
+                {
+                    afficher_dialogue_box("Echec du chargement.");
+                    SDL_RenderPresent(renderer);
+                    SDL_Delay(1000);
+                    free(joueur_temp);
+                    joueur_temp = NULL;
+                }
+                else
+                {
+                    // 🔁 Recharge texture immédiatement après chargement brut
+                    reload_player_texture(joueur_temp, renderer, "ressources/pnj/ginoux1.png");
+
+                    map = tmx_load(current_map_path);
+                    current_map_id = get_map_id(current_map_path);
+                    if (!map)
+                    {
+                        tmx_perror("Erreur chargement map");
+                        free(joueur_temp);
+                        joueur_temp = NULL;
+                        continue;
+                    }
+
+                    joueur = joueur_temp;
+                    game_loop(renderer, &map, joueur, &current_map_id);
+
+                    free(joueur);
+                    joueur = NULL;
+                    tmx_map_free(map);
+                }
+            }
+        }
+        else if (choice == 2) // Quitter
+        {
+            running = 0;
+        }
+    }
+
+    TTF_CloseFont(global_font);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(win);
+    TTF_Quit();
+    IMG_Quit();
+    SDL_Quit();
+    return 0;
+}
+
+int warningDeath(Player *player, SDL_Renderer *renderer)
+{
+    // FAIM
+    if (player->stats.faim < 30 && !player->faim_warning_affiche)
+    {
+        afficher_dialogue_box("Je commence à avoir faim...");
+        SDL_RenderPresent(renderer);
+        SDL_Delay(900);
+        player->faim_warning_affiche = 1;
+    }
+    else if (player->stats.faim > 60 && player->faim_warning_affiche)
+    {
+        player->faim_warning_affiche = 0;
+    }
+
+    // eNERGIE
+    if (player->stats.energie < 30 && !player->energie_warning_affiche)
+    {
+        afficher_dialogue_box("Rfff... Je commence a etre epuise...");
+        SDL_RenderPresent(renderer);
+        SDL_Delay(900);
+        player->energie_warning_affiche = 1;
+    }
+    else if (player->stats.energie > 60 && player->energie_warning_affiche)
+    {
+        player->energie_warning_affiche = 0;
+    }
+
+    // MORT
+    if (player->stats.pv <= 0 && !player->mort_affichee)
+    {
+        player->mort_affichee = 1;
+
+        // ecran Game Over
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_Rect box = {200, 250, 400, 100};
+        SDL_SetRenderDrawColor(renderer, 80, 0, 0, 255);
+        SDL_RenderFillRect(renderer, &box);
+        printf_2D(280, 280, "GAME OVER - Jean-Mi est mort");
+        SDL_RenderPresent(renderer);
+        SDL_Delay(3000);
+
+        return 1; // Signale à game_loop que le joueur est mort
+    }
+    else if (player->stats.pv > 0)
+    {
+        player->mort_affichee = 0;
+    }
+
+    return 0;
+}
+void update_and_render_stats(Player *p)
+{
+    static Uint32 last_update = 0;
+    if (SDL_GetTicks() - last_update > 2000)
+    {
+        last_update = SDL_GetTicks();
+        if (p->stats.faim > 0)
+            p->stats.faim--;
+        if (p->stats.energie > 0)
+            p->stats.energie--;
+        if (p->stats.faim == 0 || p->stats.energie == 0)
+        {
+            if (p->stats.pv > 0)
+                p->stats.pv--;
+        }
+    }
+}
+
+void update_player_and_handle_exit(Player *p, int mx, int my, tmx_map **map, SDL_Renderer *renderer, int *current_map_id, PNJ ***pnjs, int *nb_pnjs)
+{
+    int new_x = p->x + mx * p->speed;
+    int new_y = p->y + my * p->speed;
+    tmx_layer *layer = (*map)->ly_head;
+    while (layer)
+    {
+        if (layer->type == L_OBJGR)
+        {
+            tmx_object *obj = layer->content.objgr->head;
+            while (obj)
+            {
+                if (obj->visible && obj->obj_type == OT_SQUARE)
+                {
+                    int obj_x = obj->x;
+                    int obj_y = obj->y;
+                    int obj_w = obj->width;
+                    int obj_h = obj->height;
+                    int px = new_x - p->size / 2;
+                    int py = new_y - p->size / 2;
+
+                    if (px < obj_x + obj_w && px + p->size > obj_x &&
+                        py < obj_y + obj_h && py + p->size > obj_y)
+                    {
+                        if (layer->name && strcmp(layer->name, "Collisions") == 0)
+                            return;
+
+                        if (*current_map_id == 0 && obj->name && strcmp(obj->name, "Exit") == 0)
+                        {
+                            liberer_pnjs(*pnjs, *nb_pnjs);
+                            tmx_map_free(*map);
+                            strcpy(current_map_path, "ressources/maps/Village_2_Gounix_mini.tmx");
+                            *map = tmx_load(current_map_path);
+                            *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                            *current_map_id = get_map_id(current_map_path);
+                            p->x = 55;
+                            p->y = 340;
+                            printf("Passage à la carte Village\n");
+                            SDL_Delay(250);
+                            return;
+                        }
+                        if (*current_map_id == 2 && obj->name && strcmp(obj->name, "Exit") == 0)
+                        {
+                            liberer_pnjs(*pnjs, *nb_pnjs);
+                            tmx_map_free(*map);
+                            strcpy(current_map_path, "ressources/maps/Village_2_Gounix_mini.tmx");
+                            *map = tmx_load(current_map_path);
+                            *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                            *current_map_id = get_map_id(current_map_path);
+                            p->x = 650;
+                            p->y = 340;
+                            printf("Retour à la carte Village depuis le Bar\n");
+                            SDL_Delay(250);
+                            return;
+                        }
+                        if (*current_map_id == 3 && obj->name && strcmp(obj->name, "Exit") == 0)
+                        {
+                            liberer_pnjs(*pnjs, *nb_pnjs);
+                            tmx_map_free(*map);
+                            strcpy(current_map_path, "ressources/maps/Village_2_Gounix_mini.tmx");
+                            *map = tmx_load(current_map_path);
+                            *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                            *current_map_id = get_map_id(current_map_path);
+                            p->x = 335;
+                            p->y = 180;
+                            printf("Retour à la carte Village depuis la Classe\n");
+                            SDL_Delay(250);
+                            return;
+                        }
+                        if (*current_map_id == 1 && obj->name)
+                        {
+                            if (strcmp(obj->name, "ExitMaison") == 0)
+                            {
+                                liberer_pnjs(*pnjs, *nb_pnjs);
+                                tmx_map_free(*map);
+                                strcpy(current_map_path, "ressources/maps/Maison_2_Gounix.tmx");
+                                *map = tmx_load(current_map_path);
+                                *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                                *current_map_id = get_map_id(current_map_path);
+                                p->x = 100;
+                                p->y = 420;
+                                printf("Retour à la carte Maison\n");
+                                SDL_Delay(250);
+                                return;
+                            }
+                            else if (strcmp(obj->name, "ExitBar") == 0)
+                            {
+                                liberer_pnjs(*pnjs, *nb_pnjs);
+                                tmx_map_free(*map);
+                                strcpy(current_map_path, "ressources/maps/Bar_2_Gounix.tmx");
+                                *map = tmx_load(current_map_path);
+                                *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                                *current_map_id = get_map_id(current_map_path);
+                                p->x = 230;
+                                p->y = 350;
+                                printf("Aller à la carte Bar\n");
+                                SDL_Delay(250);
+                                return;
+                            }
+                            else if (strcmp(obj->name, "ExitEcole") == 0)
+                            {
+                                liberer_pnjs(*pnjs, *nb_pnjs);
+                                tmx_map_free(*map);
+                                strcpy(current_map_path, "ressources/maps/Classe_2_Gounix.tmx");
+                                *map = tmx_load(current_map_path);
+                                *pnjs = charger_pnjs_depuis_tiled(*map, renderer, nb_pnjs);
+                                *current_map_id = get_map_id(current_map_path);
+                                p->x = 90;
+                                p->y = 80;
+                                printf("Aller à la carte Classe\n");
+                                SDL_Delay(250);
+                                return;
+                            }
+                        }
+                    }
+                }
+                obj = obj->next;
+            }
+        }
+        layer = layer->next;
+    }
+    p->x = new_x;
+    p->y = new_y;
+}
+
+int get_map_id(const char *path)
+{
+    if (strstr(path, "Village") != NULL)
+        return 1;
+    else if (strstr(path, "Bar") != NULL)
+        return 2;
+    else if (strstr(path, "Classe") != NULL)
+        return 3;
+    else
+        return 0;
+}
+
+PNJ *init_pnj_from_name(const char *name, int x, int y, SDL_Renderer *renderer)
+{
+    for (int i = 0; i < NB_PNJ_INFOS; i++)
+    {
+        if (strcmp(name, pnj_infos[i].name) == 0)
+        {
+            PNJ *pnj = malloc(sizeof(PNJ));
+            if (!pnj)
+            {
+                fprintf(stderr, "Erreur allocation PNJ %s\n", name);
+                return NULL;
+            }
+            SDL_Surface *surface = IMG_Load(pnj_infos[i].sprite_path);
+            if (!surface)
+            {
+                fprintf(stderr, "Erreur chargement sprite %s : %s\n", pnj_infos[i].sprite_path, IMG_GetError());
+                free(pnj);
+                return NULL;
+            }
+            pnj->texture = SDL_CreateTextureFromSurface(renderer, surface);
+            SDL_FreeSurface(surface);
+            if (!pnj->texture)
+            {
+                fprintf(stderr, "Erreur creation texture pour %s\n", name);
+                free(pnj);
+                return NULL;
+            }
+            pnj->x = x;
+            pnj->y = y;
+            pnj->size = PLAYER_SIZE;
+            pnj->dernier_dialogue_index = -1;
+            strncpy(pnj->name, name, sizeof(pnj->name));
+            return pnj;
+        }
+    }
+    fprintf(stderr, "PNJ '%s' non trouve dans pnj_infos[]\n", name);
+    return NULL;
+}
+
+PNJ **charger_pnjs_depuis_tiled(tmx_map *map, SDL_Renderer *renderer, int *nb_pnjs)
+{
+    tmx_layer *layer = map->ly_head;
+    while (layer)
+    {
+        if (layer->type == L_OBJGR && strcmp(layer->name, "PNJ") == 0)
+        {
+            tmx_object *obj = layer->content.objgr->head;
+            int count = 0;
+            tmx_object *tmp = obj;
+            while (tmp)
+            {
+                count++;
+                tmp = tmp->next;
+            }
+            PNJ **pnjs = malloc(sizeof(PNJ *) * count);
+            if (!pnjs)
+            {
+                fprintf(stderr, "Erreur allocation tableau PNJ\n");
+                *nb_pnjs = 0;
+                return NULL;
+            }
+            int i = 0;
+            while (obj)
+            {
+                if (obj->name)
+                {
+                    int px = obj->x;
+                    int py = obj->y;
+                    PNJ *p = init_pnj_from_name(obj->name, px, py, renderer);
+                    if (p)
+                    {
+                        pnjs[i++] = p;
+                    }
+                    else
+                    {
+                        fprintf(stderr, "Erreur chargement PNJ %s\n", obj->name);
+                    }
+                }
+                obj = obj->next;
+            }
+            *nb_pnjs = i;
+            return pnjs;
+        }
+        layer = layer->next;
+    }
+    fprintf(stderr, "Aucune couche PNJ trouvee dans la map.\n");
+    *nb_pnjs = 0;
+    return NULL;
+}
+
+void liberer_pnjs(PNJ **pnjs, int nb)
+{
+    if (!pnjs)
+        return;
+    for (int i = 0; i < nb; i++)
+    {
+        if (pnjs[i])
+        {
+            if (pnjs[i]->texture)
+            {
+                SDL_DestroyTexture(pnjs[i]->texture);
+            }
+            free(pnjs[i]);
+        }
+    }
+    free(pnjs);
+}
+void intro_box(SDL_Renderer *renderer)
+{
+    const char *intro[] = {
+        "Jean-Mi vient tout juste de decrocher son diplome de mathematiques.",
+        "Fier, il retourne voir son ancien professeur pour lui montrer.",
+        "Le professeur n'en croit pas ses yeux. Il est completement choque par ce prodige.",
+        "Les annees passent. Jean-Mi, fascine par le chaos, se plonge dans la recherche.",
+        "Il etudie la vie, la meteo, les relations humaines, tout semble echapper a l'ordre.",
+        "Au fil de ses lectures, il decouvre aussi l'histoire des sciences.",
+        "A 25 ans, il devient passionne par Einstein et la theorie de la relativite.",
+        "Fier de ses decouvertes, Jean-Mi retourne voir son mentor pour partager ses lectures.",
+        "Le vieux professeur lui lance : \n La theorie de la relativite restreinte, c'est Poincare qui l'a trouve, pas Einstein, jeune loup",
+        "C'est un choc pour Jean-Mi !",
+        "Il quitte la salle, decide a en apprendre plus sur Poincare.",
+        "Il se plonge dans les biographies et decouvre une vie incroyable, pleine de panache.",
+        "Plus tard, il tente de convaincre ses collegues de la grandeur de Poincare.",
+        "Collegue : \nC'est Einstein qui a tout trouve, pas la peine de debattre...",
+        "Decourage, Jean-Mi retourne voir son mentor.",
+        "Jean-Mi : \nC'est impossible de leur faire entendre raison... Je suis desempare.",
+        "Professeur : \nRegle numero 3, la vie est injuste. La majorite prefere la legende a la realite.",
+        "Jean-Mi : \nJamais je n'abandonnerai. Je veux redonner a Poincare la place qu'il merite.",
+        "Professeur : \nSois pret a tout perdre. Travail, maison, jusqu'a ton ame...",
+        "Les paroles du professeur furent prophetiques. Jean-Mi perdit tout.",
+        "Objectif : Ecrire des livres pour redorer la gloire de Poincare.",
+        "Devenir un specialiste du chaos.",
+        "Et pourquoi pas, vivre de sa plume.",
+        "Pour l'instant, Jean-Mi est retourne vivre chez sa mere.",
+        "Il cherche du travail, et une offre arrive de la NESI, a condition de ne plus parler de Poincare.",
+        "Jean Mi :\nTres bien, tant qu'on ne m'empeche pas d'ecrire !\"",
+        "Jean Mi ton aventure commence.\nVa parler a Mamie pour debuter ta quete.",
+        "Les touches utiles : \n e pour interagir avec les PNJ \n i pour inventaire \n n pour aller niquer ta race \n o pour l'objectif \n",
+        NULL};
+
+    int idx = 0;
+    SDL_Event e;
+    int continuer = 1;
+    while (continuer)
+    {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+
+        if (strlen(intro[idx]) > 0)
+        {
+            afficher_dialogue_box(intro[idx]);
+        }
+        SDL_RenderPresent(renderer);
+
+        int avancer = 0;
+        while (!avancer && SDL_WaitEvent(&e))
+        {
+            if (e.type == SDL_QUIT)
+                exit(0);
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_RETURN)
+            {
+                avancer = 1;
+            }
+        }
+        idx++;
+        if (intro[idx] == NULL)
+            continuer = 0;
+    }
+}
+int split_text(const char *texte, char lignes[][128], int max_lignes, int max_chars)
+{
+    int nb_lignes = 0;
+    const char *p = texte;
+    while (*p && nb_lignes < max_lignes)
+    {
+        // Ignore les espaces en debut de ligne
+        while (*p && isspace(*p))
+            p++;
+
+        int len = 0;
+        int last_space = -1;
+        while (p[len] && len < max_chars)
+        {
+            if (isspace(p[len]))
+                last_space = len;
+            if (p[len] == '\n')
+            {
+                last_space = len;
+                break;
+            }
+            len++;
+        }
+        // On evite de couper au milieu d'un mot si possible
+        if (p[len] && last_space > 0 && last_space < len)
+            len = last_space;
+        // Copie la sous-chaîne
+        strncpy(lignes[nb_lignes], p, len);
+        lignes[nb_lignes][len] = '\0';
+        nb_lignes++;
+        // Passe à la suite du texte
+        p += len;
+        while (*p && isspace(*p))
+            p++;
+    }
+    return nb_lignes;
+}
+void check_interaction_objets_event(Player *p, tmx_map *map, PNJ **pnjs, int nb_pnjs)
+{
+    tmx_layer *layer = map->ly_head;
+    while (layer)
+    {
+        if (layer->type == L_OBJGR)
+        {
+            tmx_object *obj = layer->content.objgr->head;
+            while (obj)
+            {
+                if (obj->visible && obj->obj_type == OT_SQUARE && obj->name)
+                {
+                    int dx = (obj->x + obj->width / 2) - p->x;
+                    int dy = (obj->y + obj->height / 2) - p->y;
+                    int distance = dx * dx + dy * dy;
+                    if (distance < 900)
+                    { // Proximite ≈ 30 pixels
+                        if (strcmp(obj->name, "nourriture") == 0)
+                        {
+                            interaction_nourriture(p, ren);
+                        }
+                        if (strcmp(obj->name, "lit") == 0)
+                        {
+                            interaction_lit(p, ren, map, pnjs, nb_pnjs);
+                        }
+                        if (strcmp(obj->name, "livre") == 0)
+                        {
+                            if (p->quete.parle_a_mamie && p->quete.etape == 1 && !p->inventaire.a_livre)
+                            {
+                                // Ramassage du livre
+                                p->inventaire.a_livre = 1;
+                                p->quete.a_trouve_livre = 1;
+                                p->quete.etape = 2;
+
+                                afficher_dialogue_box("Tu as trouve le livre de Poincare.");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(1000);
+                                afficher_dialogue_box("Je dois organiser une conference a la NESI pour rehabiliter Poincare.");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(1000);
+                                afficher_dialogue_box("Kevin connait du monde dans l'administration...");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(1000);
+                            }
+                            else if (p->inventaire.a_livre)
+                            {
+                                afficher_dialogue_box("Tu as deja pris le livre.");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(1000);
+                            }
+                            else
+                            {
+                                afficher_dialogue_box("Ce livre semble ancien... mais je ne vois pas quoi en faire pour le moment.");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(1000);
+                            }
+                        }
+
+                        if (strcmp(obj->name, "stylo") == 0)
+                        {
+                            if (!p->quete.parle_a_kevin)
+                            {
+                                afficher_dialogue_box("Ce n est pas le moment de prendre ce stylo...");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(900);
+                                return;
+                            }
+
+                            if (!p->inventaire.a_stylo)
+                            {
+                                p->inventaire.a_stylo = 1;
+                                afficher_dialogue_box("Tu recuperes un vieux stylo...");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(900);
+                            }
+                            else
+                            {
+                                afficher_dialogue_box("Tu as deja pris ce stylo.");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(900);
+                            }
+                        }
+                        if (strcmp(obj->name, "tampon") == 0)
+                        {
+                            if (!p->inventaire.a_tampon)
+                            {
+                                p->inventaire.a_tampon = 1;
+                                afficher_dialogue_box("Tu recuperes un tampon dore...");
+                                SDL_RenderPresent(ren);
+                                SDL_Delay(900);
+                            }
+                        }
+                    }
+                }
+                obj = obj->next;
+            }
+        }
+        layer = layer->next;
+    }
+}
+void interaction_nourriture(Player *p, SDL_Renderer *renderer)
+{
+    // Si on est dans la zone critique
+    if (p->stats.faim >= 90)
+    {
+        if (!p->a_force_sur_nourriture)
+        {
+            // Premier avertissement dès 90
+            p->a_force_sur_nourriture = 1;
+            afficher_dialogue_box("Je suis plein... si je continue, je vais exploser !");
+            SDL_RenderPresent(renderer);
+            SDL_Delay(900);
+            return;
+        }
+        else if (p->stats.faim >= 100)
+        {
+            // Deuxième fois à 100 → mort
+            afficher_dialogue_box("Tu forces trop, tu fais une indigestion...");
+            SDL_RenderPresent(renderer);
+            SDL_Delay(900);
+            p->stats.pv = 0;
+            return;
+        }
+    }
+
+    // Manger normalement
+    p->stats.faim += p->gain_nourriture;
+    if (p->stats.faim > 100)
+        p->stats.faim = 100;
+    afficher_dialogue_box("Miam...!");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(900);
+
+    // On reset le flag si on est redescendu
+    if (p->stats.faim < 90)
+        p->a_force_sur_nourriture = 0;
+}
+void interaction_lit(Player *p, SDL_Renderer *renderer, tmx_map *map, PNJ **pnjs, int nb_pnjs)
+{
+    int now = SDL_GetTicks();
+
+    // Anti-spam
+    if (now - p->dernier_sommeil < 4000)
+    {
+        afficher_dialogue_box("Tu viens juste de te reposer.");
+        SDL_RenderPresent(renderer);
+        SDL_Delay(900);
+        return;
+    }
+
+    p->dernier_sommeil = now;
+
+    if (p->stats.energie >= 100)
+    {
+        afficher_dialogue_box("Je suis deja en pleine forme !");
+        SDL_RenderPresent(renderer);
+        SDL_Delay(900);
+        return;
+    }
+
+    // Message repos
+    afficher_dialogue_box("Tu te reposes un moment...");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(900);
+
+    // 🎬 ecran noir
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1000);
+
+    // 🔋 Gagner de l’energie
+    p->stats.energie += p->gain_sommeil;
+    if (p->stats.energie > 100)
+        p->stats.energie = 100;
+
+    // 🎬 Rafraîchissement map
+    Camera cam = {p->x - DISPLAY_W / 2, p->y - DISPLAY_H / 2, INITIAL_ZOOM};
+    render_map(map, &cam);
+    render_player(p, renderer, &cam);
+    for (int i = 0; i < nb_pnjs; i++)
+    {
+        render_pnj(pnjs[i], renderer, &cam);
+    }
+    render_stats(p);
+    SDL_RenderPresent(renderer);
+
+    p->heure_du_jour += 4;
+    if (p->heure_du_jour >= 24)
+        p->heure_du_jour -= 24;
+}
+int pause_menu(SDL_Renderer *renderer, TTF_Font *font)
+{
+    const char *options[] = {
+        "Reprendre",
+        "Sauvegarder la partie",
+        "Charger une partie",
+        "Retour Menu Principal",
+        "Quitter le jeu"};
+    const int nb_options = 5;
+    int selected = 0;
+    SDL_Event e;
+    int running = 1;
+
+    while (running)
+    {
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
+        SDL_RenderClear(renderer);
+
+        for (int i = 0; i < nb_options; i++)
+        {
+            SDL_Color color = (i == selected) ? (SDL_Color){255, 255, 0} : (SDL_Color){255, 255, 255};
+            SDL_Surface *text = TTF_RenderText_Solid(font, options[i], color);
+            SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, text);
+            SDL_Rect pos = {DISPLAY_W / 2 - text->w / 2, 200 + i * 50, text->w, text->h};
+            SDL_RenderCopy(renderer, tex, NULL, &pos);
+            SDL_FreeSurface(text);
+            SDL_DestroyTexture(tex);
+        }
+
+        SDL_RenderPresent(renderer);
+
+        while (SDL_PollEvent(&e))
+        {
+            if (e.type == SDL_QUIT)
+                return 3; // Quitter jeu
+            if (e.type == SDL_KEYDOWN)
+            {
+                switch (e.key.keysym.sym)
+                {
+                case SDLK_UP:
+                    selected = (selected + nb_options - 1) % nb_options;
+                    break;
+                case SDLK_DOWN:
+                    selected = (selected + 1) % nb_options;
+                    break;
+                case SDLK_RETURN:
+                    return selected; // 0 = Reprendre, 1 = Sauvegarder, 2 = Menu principal, 3 = Quitter
+                }
+            }
+        }
+
+        SDL_Delay(100);
+    }
+
+    return 0;
+}
+void afficher_inventaire(Player *p, SDL_Renderer *renderer)
+{
+    char texte[512];
+    sprintf(texte,
+            "Inventaire :\n"
+            "- Livre : %s\n"
+            "- Stylo : %s\n"
+            "- Tampon : %s\n"
+            "- Manuscrit : %s\n"
+            "- Autorisation : %s",
+            p->inventaire.a_livre ? "oui" : "non",
+            p->inventaire.a_stylo ? "oui" : "non",
+            p->inventaire.a_tampon ? "oui" : "non",
+            p->inventaire.a_manuscrit ? "oui" : "non",
+            p->inventaire.a_autorisation ? "oui" : "non");
+
+    afficher_dialogue_box(texte);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1500);
+}
+const char *get_dialogue_pnj(Player *player, PNJ *pnj)
+{
+    if (!pnj || !pnj->name)
+        return "???";
+
+    // 🧓 Mamie Grothendieck
+    if (strcmp(pnj->name, "mamie") == 0)
+    {
+        if (!player->quete.parle_a_mamie && player->quete.etape == 0)
+        {
+            player->quete.parle_a_mamie = 1;
+            player->quete.etape = 1;
+            return "Mamie : \nPoincare... il parlait au vent, et le vent lui repondait.\n Regarde donc dans la vieille etagere dans ma chambre.\n Tu trouveras plein de choses sur sa vie";
+        }
+        else
+        {
+            return get_random_dialogue(pnj, "mamie");
+        }
+    }
+    // Pnj Kevin
+    else if (strcmp(pnj->name, "kevin") == 0)
+    {
+        // Premier échange : déclenche l'idée du stylo
+        if (player->quete.etape == 2 && !player->quete.parle_a_kevin)
+        {
+            player->quete.parle_a_kevin = 1;
+            return "Kevin : \nTu veux briller ? Signe-moi un autographe sur mon tee-shirt !";
+        }
+
+        // Monologue de Jean-Mi si pas encore pris le stylo
+        if (player->quete.parle_a_kevin && !player->inventaire.a_stylo)
+        {
+            return "Jean Mi : \nTiens, j avais un stylo sur mon bureau...";
+            SDL_Delay(2000);
+        }
+
+        // Signature avec le stylo
+        if (player->quete.parle_a_kevin && player->inventaire.a_stylo && !player->quete.a_donne_autographe)
+        {
+            player->quete.a_donne_autographe = 1;
+            player->quete.a_tampon = 1;
+            player->inventaire.a_tampon = 1; // ✅ Ajoute le tampon à l'inventaire
+            player->quete.etape = 3;
+            afficher_dialogue_box("Kevin : \nWaw, t'es une legende !\n Tiens, garde ce faux tampon dore.");
+            SDL_RenderPresent(ren);
+            SDL_Delay(2000);
+            return "Jean Mi : \nJe devrais aller au bar discuter avec roger";
+            SDL_Delay(2000);
+        }
+        // Cas par défaut (au tout début par erreur)
+        else
+        {
+            return get_random_dialogue(pnj, "kevin");
+        }
+    }
+    // 🧔 Roger Pietra
+    else if (strcmp(pnj->name, "roger") == 0)
+    {
+        if (player->heure_du_jour >= 22)
+        {
+            return "Roger : \nIl est tard... repasse demain.";
+        }
+
+        if (player->quete.etape == 3 && player->quete.a_tampon && !player->quete.parle_a_roger)
+        {
+            player->quete.parle_a_roger = 1;
+            player->quete.etape = 4;
+            afficher_dialogue_box("Jean Mi : Un fan m a donne un tampon hier !\n Je ne vois pas trop a quoi ca sert.");
+            SDL_RenderPresent(ren);
+            SDL_Delay(2000);
+            return "Roger :\nUn client emeche a perdu un tampon dore comme le tien hier..\n.Tu devrais aller voir Gaussin au village";
+        }
+
+        if (player->quete.parle_a_roger)
+        {
+            return "Roger : \nAlors, t as trouver Gaussin ? Il adore l administratif...";
+        }
+        else
+        {
+            return get_random_dialogue(pnj, "roger");
+        }
+    }
+    else if (strcmp(pnj->name, "gaussin") == 0)
+    {
+        if (player->quete.etape == 4 && player->quete.a_tampon && !player->quete.a_autorisation)
+        {
+            player->quete.a_autorisation = 1;
+            player->quete.etape = 5;
+            player->inventaire.a_autorisation = 1;
+            player->inventaire.a_tampon = 0; // ✅ Perd le tampon
+            afficher_dialogue_box("Gaussin : \nOh mon tampon qu il est beau \n Merci");
+            SDL_RenderPresent(ren);
+            SDL_Delay(2000);
+            afficher_dialogue_box("Jean MI : \nJe viens te voir pour te demander une autorisation pour organiser une conference a la NESI \n");
+            SDL_RenderPresent(ren);
+            SDL_Delay(2000);
+            afficher_dialogue_box("Gaussin : \nAttends tu as dis conference ? Interessant. \nMais pour légitimer Pointcarre il te faut un manuscrit !\nVa voir un certain Etienne Klein il traine souvent au bar");
+            SDL_RenderPresent(ren);
+            SDL_Delay(5000);
+            return "Gaussin : \nPour l autorisation Ce tampon suffira... ";
+        }
+
+        if (player->quete.a_autorisation)
+        {
+            return "Gaussin : \nNe perds pas ton autorisation, hein. C'est une version imprimée de la V10-B.";
+        }
+
+        else
+        {
+            return get_random_dialogue(pnj, "gaussin");
+        }
+    }
+    else if (strcmp(pnj->name, "klein") == 0)
+    {
+        if (player->quete.etape == 5 && !player->inventaire.a_manuscrit)
+        {
+            afficher_dialogue_box("Klein : \n Si tu veux deranger le cosmos, reponds a ma question.");
+            SDL_RenderPresent(ren);
+            SDL_Delay(1000);
+
+            if (mini_quiz_klein(ren))
+            {
+                player->inventaire.a_manuscrit = 1;
+                player->quete.etape = 6;
+                afficher_dialogue_box("Klein : \n Bien joue. Voici le manuscrit du chaos.");
+                SDL_RenderPresent(ren);
+                SDL_Delay(2000);
+                return "Jean Mi : Je peux enfin rehabiliter Pointcare et organiser ma conference a la NESI.";
+            }
+            else
+            {
+                return "Klein : \nMauvaise reponse. Reviens quand tu seras pret a comprendre le chaos.";
+            }
+        }
+
+        if (player->inventaire.a_manuscrit)
+        {
+            return "Klein : \nGarde le precieusement, ce manuscrit. C est une relique.";
+        }
+        else
+        {
+            return get_random_dialogue(pnj, "klein");
+        }
+    }
+    // 👨‍🏫 Bourbaki
+    else if (strcmp(pnj->name, "bourbaki") == 0)
+    {
+        if (player->heure_du_jour >= 20)
+        {
+            return "Bourbaki : \nJ ai des copies a corrigees... reviens demain.";
+        }
+        else
+        {
+            return get_random_dialogue(pnj, "bourbaki");
+        }
+    }
+    else if (strcmp(pnj->name, "leserre") == 0)
+    {
+        if (player->inventaire.a_livre && player->inventaire.a_autorisation && player->inventaire.a_manuscrit)
+        {
+            player->quete.etape = 7; // Fin débloquée
+            afficher_dialogue_box("Leserre : \nTu oses troubler l ordre ? Tres bien... que le chaos commence.");
+            SDL_RenderPresent(ren);
+            SDL_Delay(1000);
+
+            afficher_cinematique_fin(ren, global_font, player);
+            return ""; // plus de dialogue après la cinématique
+        }
+        else
+        {
+            afficher_dialogue_box("Leserre : \nJe vais t expliquer le traitement du signal...");
+            SDL_RenderPresent(ren);
+            SDL_Delay(2000);
+
+            player->stats.pv = 0;                                        // 💀 Mort brutale
+            return "Jean Mi :\nErreur critique d'absorption spectrale."; // rien d’autre à dire
+        }
+    }
+
+    // 🧑‍💻 Tous les autres
+    return get_random_dialogue(pnj, pnj->name);
+}
+
+const char *get_random_dialogue(PNJ *pnj, const char *name)
+{
+    for (int i = 0; i < NB_PNJ_INFOS; i++)
+    {
+        if (strcmp(pnj_infos[i].name, name) == 0)
+        {
+            int count = 0;
+            while (count < MAX_DIALOGUES && pnj_infos[i].dialogues[count])
+                count++;
+
+            if (count == 0)
+                return "…";
+
+            if (pnj->dernier_dialogue_index == -1)
+            {
+                // Tirage random + affectation
+                pnj->dernier_dialogue_index = rand() % count;
+            }
+            return pnj_infos[i].dialogues[pnj->dernier_dialogue_index];
+        }
+    }
+    return "…";
+}
+int mini_quiz_klein(SDL_Renderer *renderer)
+{
+    const char *question = "Klein :\nSelon Poincare, qu est ce qui caracterise le chaos ?";
+    const char *options[] = {
+        "1. Le hasard pur",
+        "2. La sensibilite aux conditions initiales",
+        "3. L'absence totale de loi"};
+    int bonne_reponse = 2; // option 2 (index 1) est correcte
+
+    afficher_dialogue_box(question);
+    SDL_RenderPresent(renderer);
+    SDL_Delay(1000);
+
+    for (int i = 0; i < 3; i++)
+    {
+        afficher_dialogue_box(options[i]);
+        SDL_RenderPresent(renderer);
+        SDL_Delay(2000);
+    }
+
+    afficher_dialogue_box("Klein :\nAppuie sur 1, 2 ou 3 pour repondre...");
+    SDL_RenderPresent(renderer);
+
+    SDL_Event e;
+    while (SDL_WaitEvent(&e))
+    {
+        if (e.type == SDL_KEYDOWN)
+        {
+            switch (e.key.keysym.sym)
+            {
+            case SDLK_1:
+                return bonne_reponse == 1;
+            case SDLK_2:
+                return bonne_reponse == 2;
+            case SDLK_3:
+                return bonne_reponse == 3;
+            }
+        }
+    }
+
+    return 0; // défaut : échoué
+}
+
+void afficher_cinematique_fin(SDL_Renderer *renderer, TTF_Font *font, Player *player)
+{
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    // Chargement des images
+    SDL_Surface *img_prof = IMG_Load("ressources/sprites/prof.png");
+    SDL_Surface *img_poincare = IMG_Load("ressources/sprites/poincare.png");
+    SDL_Texture *tex_prof = NULL;
+    SDL_Texture *tex_poincare = NULL;
+
+    if (img_prof)
+        tex_prof = SDL_CreateTextureFromSurface(renderer, img_prof);
+    if (img_poincare)
+        tex_poincare = SDL_CreateTextureFromSurface(renderer, img_poincare);
+
+    // 🎭 Étape 1
+    afficher_dialogue_box("La salle est pleine. Un silence absolu regne.");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2000);
+    SDL_RenderClear(renderer);
+
+    // 🎭 Étape 2
+    afficher_dialogue_box("Jean-Mi entre. Dans sa main, le manuscrit du chaos.");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2000);
+    SDL_RenderClear(renderer);
+
+    // 🎭 Étape 3 : mauvaise image
+    if (tex_prof)
+    {
+        SDL_Rect dest = {300, 180, 200, 200};
+        SDL_RenderCopy(renderer, tex_prof, NULL, &dest);
+    }
+
+    afficher_dialogue_box("Une lumiere se fait. Le portrait de... euh ?");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2000);
+
+    // Gag : mauvaise image
+    afficher_dialogue_box("Merde... c'est pas la bonne image.");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2000);
+    SDL_RenderClear(renderer);
+
+    // 🎭 Étape 4 : bonne image
+    if (tex_poincare)
+    {
+        SDL_Rect dest = {300, 180, 200, 200};
+        SDL_RenderCopy(renderer, tex_poincare, NULL, &dest);
+    }
+
+    afficher_dialogue_box("Le portrait de Poincarre s'illumine.");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2500);
+    SDL_RenderClear(renderer);
+
+    // 🎭 Étape 5
+    afficher_dialogue_box("Vous avez rehabilite Poincarre.");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(2000);
+    SDL_RenderClear(renderer);
+
+    // 🎭 Étape 6
+    afficher_dialogue_box("FIN");
+    SDL_RenderPresent(renderer);
+    SDL_Delay(3000);
+
+    // 🧹 Nettoyage
+    if (img_prof)
+        SDL_FreeSurface(img_prof);
+    if (img_poincare)
+        SDL_FreeSurface(img_poincare);
+    if (tex_prof)
+        SDL_DestroyTexture(tex_prof);
+    if (tex_poincare)
+        SDL_DestroyTexture(tex_poincare);
+
+    exit(0);
+}
+int sauvegarder_jeu(Player *p, const char *map_path, const char *filename)
+{
+    FILE *f = fopen(filename, "wb");
+    if (!f)
+    {
+        printf("Erreur ouverture fichier %s\n", filename);
+        return 0;
+    }
+
+    // Copier le joueur sans la texture
+    Player copy = *p;
+    copy.texture = NULL;
+
+    // Sauvegarde
+    fwrite(&copy, sizeof(Player), 1, f);
+    fwrite(map_path, sizeof(char), 128, f);
+    fclose(f);
+    return 1;
+}
+
+int charger_jeu(Player *p, char *destination_path, const char *filename)
+{
+    FILE *f = fopen(filename, "rb");
+    if (!f)
+    {
+        printf("Erreur ouverture fichier %s\n", filename);
+        return 0;
+    }
+
+    Player temp;
+    fread(&temp, sizeof(Player), 1, f);
+
+    char map_path[128];
+    fread(map_path, 128, 1, f);
+
+    fclose(f);
+
+    // Recopie les données
+    *p = temp;
+    strcpy(destination_path, map_path);
+
+    // On s'assure que la texture sera rechargée proprement
+    p->texture = NULL;
+
+    return 1;
+}
+
+void reload_player_texture(Player *p, SDL_Renderer *renderer, const char *sprite_path)
+{
+    SDL_Surface *surface = IMG_Load(sprite_path);
+    if (!surface)
+    {
+        fprintf(stderr, "Erreur IMG_Load : %s\n", IMG_GetError());
+        exit(1);
+    }
+
+    if (p->texture != NULL)
+    {
+        SDL_DestroyTexture(p->texture); // évite fuite mémoire
+    }
+
+    p->texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+
+    if (!p->texture)
+    {
+        fprintf(stderr, "Erreur SDL_CreateTextureFromSurface : %s\n", SDL_GetError());
+        exit(1);
+    }
+}

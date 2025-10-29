@@ -1,0 +1,83 @@
+# Makefile for compiling Jean-Mi Simulator to WebAssembly using Emscripten
+# Usage: emmake make -f Makefile.emscripten
+
+CC = emcc
+TARGET = jeu.html
+
+# TMX library sources
+TMX_SOURCES = src/tmx.c src/tmx_xml.c src/tmx_utils.c src/tmx_err.c src/tmx_mem.c src/tmx_hash.c
+
+# Game module sources
+GAME_SOURCES = main.c \
+	src/game/core/game_loop.c \
+	src/game/core/save_load.c \
+	src/game/entities/player.c \
+	src/game/entities/pnj.c \
+	src/game/rendering/renderer.c \
+	src/game/rendering/ui.c \
+	src/game/world/map.c \
+	src/game/world/interactions.c
+
+# All sources
+SOURCES = $(GAME_SOURCES) $(TMX_SOURCES)
+
+# libxml2 paths (compiled for Emscripten)
+LIBXML2_DIR = ../libs/libxml2
+LIBXML2_INCLUDE = -I$(LIBXML2_DIR)/include -I$(LIBXML2_DIR)/build
+LIBXML2_LIB = $(LIBXML2_DIR)/build/libxml2.a
+
+# Compiler flags
+CFLAGS = -O2 \
+	-I./src \
+	-I./src/game \
+	$(LIBXML2_INCLUDE) \
+	-sUSE_SDL=2 \
+	-sUSE_SDL_IMAGE=2 \
+	-sSDL2_IMAGE_FORMATS='["png"]' \
+	-sUSE_SDL_TTF=2 \
+	-sUSE_ZLIB=1 \
+	-sALLOW_MEMORY_GROWTH=1 \
+	-sSTACK_SIZE=5MB \
+	-sINITIAL_MEMORY=256MB \
+	-sMAXIMUM_MEMORY=512MB \
+	-sFORCE_FILESYSTEM=1 \
+	-lidbfs.js
+
+# Preload all game assets
+PRELOAD_FLAGS = --preload-file ressources@/ressources \
+	--use-preload-plugins
+
+# Export functions for web
+EXPORTED_FUNCTIONS = -sEXPORTED_FUNCTIONS='["_main","_malloc","_free"]' \
+	-sEXPORTED_RUNTIME_METHODS='["ccall","cwrap"]'
+
+# Emscripten specific settings
+EMSCRIPTEN_FLAGS = -sASYNCIFY=1 \
+	-sEXIT_RUNTIME=0 \
+	-sNO_EXIT_RUNTIME=1 \
+	-sENVIRONMENT='web'
+
+# Build target
+all: $(TARGET)
+
+$(TARGET): $(SOURCES) $(LIBXML2_LIB)
+	$(CC) $(SOURCES) $(LIBXML2_LIB) -o $(TARGET) \
+		$(CFLAGS) \
+		$(PRELOAD_FLAGS) \
+		$(EXPORTED_FUNCTIONS) \
+		$(EMSCRIPTEN_FLAGS)
+
+# Clean build artifacts
+clean:
+	rm -f jeu.js jeu.wasm jeu.html jeu.data
+
+# Debug build with source maps
+debug: CFLAGS += -g4 -sASSERTIONS=2 -sSAFE_HEAP=1
+debug: $(TARGET)
+
+# Optimized production build
+production: CFLAGS = -O3 -flto
+production: EMSCRIPTEN_FLAGS += -sWASM=1 --closure 1
+production: $(TARGET)
+
+.PHONY: all clean debug production
