@@ -18,7 +18,7 @@ Ce guide explique comment compiler et déployer la version web du jeu Jean-Mi Si
 Avant de commencer, assurez-vous d'avoir :
 
 - **Git** installé
-- **Python 3** installé (pour le serveur web de test)
+- **Python 3** et **pip3** installés (pour le serveur Flask)
 - **Un navigateur web moderne** (Chrome, Firefox, Edge, Safari)
 - **Au moins 2 Go d'espace disque libre** (pour Emscripten et les fichiers compilés)
 
@@ -112,14 +112,32 @@ Après une compilation réussie, vous aurez :
 
 Vous **ne pouvez pas** simplement ouvrir le fichier HTML dans votre navigateur (à cause des restrictions CORS). Vous devez utiliser un serveur HTTP local.
 
-### Option 1 : Serveur HTTP Python (recommandé)
+### Option 1 : Serveur Flask (recommandé)
+
+Le projet inclut un serveur Flask optimisé pour servir le jeu WebAssembly avec les bons headers.
 
 ```bash
-# Depuis le dossier tmx/
-python3 -m http.server 8000
+# Depuis la racine du projet
+./start_server.sh
+```
+
+Ou manuellement :
+
+```bash
+# Installer Flask si nécessaire
+pip3 install -r requirements.txt
+
+# Lancer le serveur
+python3 app.py
 ```
 
 Puis ouvrez votre navigateur à l'adresse : **http://localhost:8000**
+
+Le serveur Flask offre :
+- Headers CORS configurés pour le développement
+- Type MIME correct pour les fichiers WebAssembly
+- Gestion du cache pour de meilleures performances
+- Vérification automatique des fichiers compilés
 
 ### Option 2 : Serveur Emscripten
 

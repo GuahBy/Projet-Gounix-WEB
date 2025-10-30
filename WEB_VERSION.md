@@ -45,9 +45,12 @@ cd ProjetGounixWEB/tmx
 ### 3. Tester localement
 
 ```bash
-python3 -m http.server 8000
+# Depuis la racine du projet
+./start_server.sh
 # Ouvrir http://localhost:8000
 ```
+
+Le serveur Flask offre de meilleures performances et une configuration optimisée pour WebAssembly.
 
 ### 4. Déployer sur GitHub Pages
 

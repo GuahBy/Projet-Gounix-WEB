@@ -18,4 +18,5 @@ tmx/*.bc
 tmx/*.o
 
 # libxml2 (Téléchargé et compilé localement - voir build_libxml2.sh)
-libs/
+libs/__pycache__/
+*.pyc

@@ -103,16 +103,26 @@ cd tmx
 ./build_web.sh
 ```
 
-### 3. Lancer le serveur
+### 3. Installer Flask
 
 ```bash
-python3 -m http.server 8000
+cd /home/user/Projet-Gounix-WEB
+pip3 install -r requirements.txt
 ```
-### 4. Jouer depuis le navigateur
+
+### 4. Lancer le serveur Flask
+
+```bash
+./start_server.sh
+```
+
+### 5. Jouer depuis le navigateur
 
 ```bash
 http://localhost:8000
 ```
+
+Le serveur Flask offre de meilleures performances et une configuration optimisée pour WebAssembly.
 
 ---
 
