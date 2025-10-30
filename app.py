@@ -20,23 +20,30 @@ def index():
 @app.route('/<path:filename>')
 def serve_game_files(filename):
     """Sert tous les fichiers statiques (js, wasm, data, etc.)"""
-    return send_from_directory(GAME_DIR, filename)
+    # Déterminer le type MIME basé sur l'extension
+    mimetype = None
+    if filename.endswith('.wasm'):
+        mimetype = 'application/wasm'
+    elif filename.endswith('.data'):
+        mimetype = 'application/octet-stream'
+    elif filename.endswith('.js'):
+        mimetype = 'application/javascript'
+
+    if mimetype:
+        return send_from_directory(GAME_DIR, filename, mimetype=mimetype)
+    else:
+        return send_from_directory(GAME_DIR, filename)
 
 @app.after_request
 def add_headers(response):
     """Ajoute les headers nécessaires pour WebAssembly et CORS"""
-    # Headers pour WebAssembly
-    if response.mimetype == 'application/wasm':
-        response.headers['Content-Type'] = 'application/wasm'
-
     # Headers CORS pour le développement local
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
 
     # Headers de cache pour améliorer les performances
-    if any(response.direct_passthrough or response.mimetype == mt for mt in
-           ['application/wasm', 'application/octet-stream', 'application/javascript']):
+    if response.mimetype in ['application/wasm', 'application/octet-stream', 'application/javascript']:
         response.headers['Cache-Control'] = 'public, max-age=3600'
 
     return response
