@@ -94,10 +94,11 @@ git pull
 ./emsdk activate latest
 source ./emsdk_env.sh
 ```
-
 ### 2. Compiler avec Emscripten
 
 ```bash
+source ./emsdk_env.sh
+./build_libxmlé.sh
 cd tmx
 ./build_web.sh
 ```
