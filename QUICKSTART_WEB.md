@@ -90,14 +90,21 @@ netlify deploy --prod
 
 ---
 
-### Option 3 : Test local (30 secondes)
+### Option 3 : Test local avec Flask (30 secondes)
 
 ```bash
-cd /home/user/ProjetGounixWEB/tmx
-python3 -m http.server 8000
+cd /home/user/ProjetGounixWEB
+
+# Installer Flask si nécessaire
+pip3 install -r requirements.txt
+
+# Démarrer le serveur
+./start_server.sh
 ```
 
 Ouvrez http://localhost:8000 dans votre navigateur.
+
+Le serveur Flask offre de meilleures performances et une configuration optimisée pour WebAssembly.
 
 ---
 
