@@ -20,3 +20,5 @@ tmx/*.o
 # libxml2 (Téléchargé et compilé localement - voir build_libxml2.sh)
 libs/__pycache__/
 *.pyc
+venv/
+libs/
