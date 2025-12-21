@@ -1,0 +1,21 @@
+tmx/jeu
+
+# Fichiers compilés Emscripten (version web)
+tmx/jeu.html
+tmx/jeu.js
+tmx/jeu.wasm
+tmx/jeu.data
+tmx/jeu.worker.js
+
+# Fichiers de test
+tmx/test_tmx.html
+tmx/test_tmx.js
+tmx/test_tmx.wasm
+tmx/test_tmx.data
+
+# Cache de compilation
+tmx/*.bc
+tmx/*.o
+
+# libxml2 (Téléchargé et compilé localement - voir build_libxml2.sh)
+libs/

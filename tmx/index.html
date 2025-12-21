@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jean-Mi Gounix Simulator - Jeu Web</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .game-container {
+            background: #fff;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            max-width: 900px;
+            width: 100%;
+        }
+
+        .game-header {
+            background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .game-header h1 {
+            font-size: 2em;
+            margin-bottom: 5px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .game-header p {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+
+        .game-content {
+            padding: 20px;
+            background: #f7fafc;
+        }
+
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        #canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #status {
+            text-align: center;
+            padding: 15px;
+            font-size: 14px;
+            color: #4a5568;
+            min-height: 50px;
+        }
+
+        #progress {
+            width: 100%;
+            height: 20px;
+            background: #e2e8f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        #progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .controls {
+            background: #edf2f7;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+
+        .controls h3 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .control-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            font-size: 14px;
+            color: #4a5568;
+        }
+
+        .control-item {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            background: white;
+            border-radius: 5px;
+        }
+
+        .key {
+            background: #4a5568;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-right: 10px;
+            font-size: 12px;
+            min-width: 60px;
+            text-align: center;
+        }
+
+        .spinner {
+            border: 4px solid #e2e8f0;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: #e53e3e;
+            background: #fff5f5;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #e53e3e;
+        }
+
+        #output {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 15px;
+            display: none;
+        }
+
+        #output.visible {
+            display: block;
+        }
+
+        footer {
+            background: #2d3748;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 0.85em;
+        }
+
+        footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-header">
+            <h1>Jean-Mi Gounix Simulator</h1>
+            <p>Jeu d'aventure 2D par Gounix Team</p>
+        </div>
+
+        <div class="game-content">
+            <div id="status">
+                <div class="spinner"></div>
+                <p>Chargement du jeu...</p>
+            </div>
+
+            <div id="progress">
+                <div id="progress-bar"></div>
+            </div>
+
+            <div id="canvas-container">
+                <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+            </div>
+
+            <div class="controls">
+                <h3>Contrôles du jeu</h3>
+                <div class="control-list">
+                    <div class="control-item">
+                        <span class="key">↑ W</span>
+                        <span>Haut</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">↓ S</span>
+                        <span>Bas</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">← A</span>
+                        <span>Gauche</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">→ D</span>
+                        <span>Droite</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">E</span>
+                        <span>Interagir</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">I</span>
+                        <span>Inventaire</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">ESC</span>
+                        <span>Menu Pause</span>
+                    </div>
+                    <div class="control-item">
+                        <span class="key">F9</span>
+                        <span>Menu Admin</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="output"></div>
+        </div>
+
+        <footer>
+            <p>Propulsé par <a href="https://emscripten.org" target="_blank">Emscripten</a> |
+            SDL2 compilé en WebAssembly</p>
+        </footer>
+    </div>
+
+    <script type='text/javascript'>
+        var statusElement = document.getElementById('status');
+        var progressElement = document.getElementById('progress-bar');
+        var canvasElement = document.getElementById('canvas');
+        var outputElement = document.getElementById('output');
+
+        var Module = {
+            preRun: [],
+            postRun: [],
+            print: (function() {
+                return function(text) {
+                    if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+                    console.log(text);
+                    outputElement.innerHTML += text + "\n";
+                    outputElement.scrollTop = outputElement.scrollHeight;
+                };
+            })(),
+            printErr: function(text) {
+                if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+                console.error(text);
+                outputElement.classList.add('visible');
+                outputElement.innerHTML += '<span style="color:#fc8181">' + text + "</span>\n";
+                outputElement.scrollTop = outputElement.scrollHeight;
+            },
+            canvas: canvasElement,
+            setStatus: function(text) {
+                if (!Module.setStatus.last) Module.setStatus.last = { time: Date.now(), text: '' };
+                if (text === Module.setStatus.last.text) return;
+
+                var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+                var now = Date.now();
+
+                if (m && now - Module.setStatus.last.time < 30) return;
+
+                Module.setStatus.last.time = now;
+                Module.setStatus.last.text = text;
+
+                if (m) {
+                    text = m[1];
+                    var progress = parseInt(m[2]) * 100 / parseInt(m[4]);
+                    progressElement.style.width = progress + '%';
+                } else {
+                    progressElement.style.width = '0%';
+                }
+
+                if (text) {
+                    statusElement.innerHTML = '<p>' + text + '</p>';
+                } else {
+                    statusElement.innerHTML = '<p style="color:#48bb78">Jeu chargé ! Cliquez sur le canvas pour commencer.</p>';
+                    document.getElementById('progress').style.display = 'none';
+                }
+            },
+            totalDependencies: 0,
+            monitorRunDependencies: function(left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                Module.setStatus(left ? 'Préparation... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'Téléchargement terminé.');
+            },
+            onRuntimeInitialized: function() {
+                console.log('Runtime Emscripten initialisé avec succès');
+            }
+        };
+
+        Module.setStatus('Téléchargement du jeu...');
+
+        window.onerror = function(event) {
+            Module.setStatus('Erreur! Voir la console.');
+            statusElement.innerHTML = '<div class="error">Une erreur est survenue lors du chargement. Consultez la console du navigateur pour plus de détails.</div>';
+        };
+
+        // Focus sur le canvas au clic
+        canvasElement.addEventListener('click', function() {
+            canvasElement.focus();
+        }, false);
+    </script>
+    <script async type="text/javascript" src="jeu.js"></script>
+</body>
+</html>
